@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using Macula.Connection;
+using Macula.Frame;
 using Macula.Identity;
 
 namespace Macula.Tests;
@@ -40,5 +41,50 @@ public class LiveStationTests
 
         Assert.True(session.RemoteInfo.Accepted);
         Assert.Equal(32, session.RemoteInfo.NodeId.Length);
+    }
+
+    [Fact]
+    public async Task Unary_call_round_trip_against_a_nonexistent_procedure_reports_unknown_next_peer()
+    {
+        var identity = KeyPair.GenerateWithDefaultPuzzle();
+        await using var session = await Session.ConnectAsync(StationHost, StationPort, identity, Connection.Trust.UseWebPki);
+
+        var realm = new byte[32];
+        var response = await session.CallAsync(
+            "macula_csharp_sdk.definitely_not_a_real_procedure",
+            realm,
+            Value.Text("hello"),
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 10_000,
+            TimeSpan.FromSeconds(10));
+
+        var error = Assert.IsType<CallResponse.Error>(response);
+        Assert.Equal("unknown_next_peer", error.Name);
+    }
+
+    [Fact]
+    public async Task Publish_subscribe_round_trip_delivers_our_own_publish_directly()
+    {
+        var identity = KeyPair.GenerateWithDefaultPuzzle();
+        await using var session = await Session.ConnectAsync(StationHost, StationPort, identity, Connection.Trust.UseWebPki);
+
+        var realm = new byte[32];
+        var topic = $"macula_csharp_sdk.test.{Guid.NewGuid():N}";
+
+        await session.SubscribeAsync(new SubscribeSpec { Topic = topic, Realm = realm, Subscriber = identity.NodeId() });
+
+        await session.PublishAsync(new PublishSpec
+        {
+            Topic = topic,
+            Realm = realm,
+            Publisher = identity.NodeId(),
+            Seq = 1,
+            Payload = Value.Text("hello mesh"),
+            PublishedAtMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+
+        var evt = await session.RecvEventAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(topic, evt.Topic);
+        Assert.Equal("hello mesh", evt.Payload.AsText());
+        Assert.Equal("direct", evt.DeliveredVia);
     }
 }

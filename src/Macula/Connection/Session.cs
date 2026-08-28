@@ -2,10 +2,23 @@ using System.Net;
 using System.Net.Quic;
 using System.Net.Security;
 using System.Runtime.Versioning;
+using Macula.Bolt4;
 using Macula.Frame;
 using Macula.Identity;
 
 namespace Macula.Connection;
+
+/// <summary>A provider-side handler for one advertised (realm, procedure). Throw <see cref="CallHandlerException"/> for an application-level failure with a message; any other exception is treated as a crash.</summary>
+public delegate Task<Value> CallHandler(Value payload);
+
+/// <summary>Resolves an inbound CALL's (realm, procedure) to a handler, or null if nothing is advertised for it.</summary>
+public delegate CallHandler? CallLookup(byte[] realm, string procedure);
+
+/// <summary>Thrown by a <see cref="CallHandler"/> to produce an explicit `unknown_error` reply with this message as `detail`, distinct from an unexpected crash (temporary_relay_failure, no detail).</summary>
+public sealed class CallHandlerException : Exception
+{
+    public CallHandlerException(string message) : base(message) { }
+}
 
 public sealed class ConnectRefusedException : Exception
 {
@@ -15,6 +28,21 @@ public sealed class ConnectRefusedException : Exception
         : base(refusalCode is { } code ? $"station refused the connection (refusal_code={code})" : "station refused the connection")
     {
         RefusalCode = refusalCode;
+    }
+}
+
+/// <summary>
+/// The HELLO frame's own signature didn't verify against the node_id it
+/// claims -- proves nothing about who actually sent it.
+/// </summary>
+public sealed class HelloSignatureInvalidException : Exception
+{
+    public Envelope.VerifyError Reason { get; }
+
+    public HelloSignatureInvalidException(Envelope.VerifyError reason)
+        : base($"HELLO signature check failed: {reason}")
+    {
+        Reason = reason;
     }
 }
 
@@ -104,6 +132,19 @@ public sealed class Session : IAsyncDisposable
             }
 
             var helloInfo = HelloFrame.Parse(helloFrame);
+
+            // The HELLO's own signature must verify against the node_id it
+            // claims -- proves nothing about who actually sent it otherwise.
+            // A station is never expected to send anything but a
+            // legitimately-signed HELLO at this point, but skipping this
+            // check would mean trusting the peer's self-reported identity
+            // on faith alone.
+            var helloMap = (Value.MapValue)helloFrame;
+            if (Envelope.Verify(helloMap, helloInfo.NodeId) is { } verifyError)
+            {
+                throw new HelloSignatureInvalidException(verifyError);
+            }
+
             if (!helloInfo.Accepted)
             {
                 throw new ConnectRefusedException(helloInfo.RefusalCode);
@@ -128,6 +169,200 @@ public sealed class Session : IAsyncDisposable
 
     /// <summary>Receives the next frame off the control stream.</summary>
     public Task<Value> RecvAsync(CancellationToken ct = default) => _control.RecvFrameAsync(ct);
+
+    /// <summary>
+    /// Send a signed CALL on the control stream and wait for the matching
+    /// RESULT or ERROR, correlated by call_id.
+    ///
+    /// Known v1 limitation (control stream only, matching the sibling
+    /// Go/Rust SDKs): any frame that arrives before the match (e.g. an
+    /// EVENT from an active SUBSCRIBE) is discarded, not queued or
+    /// dispatched elsewhere -- correct for a client doing one thing at a
+    /// time on the control stream, not yet correct for CALL and
+    /// PUBLISH/SUBSCRIBE used concurrently on it.
+    /// </summary>
+    public async Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, CancellationToken ct = default)
+    {
+        var callId = new byte[16];
+        Random.Shared.NextBytes(callId);
+        var spec = new CallSpec
+        {
+            CallId = callId,
+            Procedure = procedure,
+            Realm = realm,
+            Payload = payload,
+            DeadlineMs = deadlineMs,
+            Caller = Identity.NodeId(),
+        };
+        await SendAsync(CallFrame.Build(spec), ct).ConfigureAwait(false);
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+        try
+        {
+            return await AwaitCallResponseAsync(callId, timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException($"no response for call_id {Convert.ToHexStringLower(callId)} within {timeout}");
+        }
+    }
+
+    private async Task<CallResponse> AwaitCallResponseAsync(byte[] callId, CancellationToken ct)
+    {
+        while (true)
+        {
+            var value = await RecvAsync(ct).ConfigureAwait(false);
+            var gotCallId = CallFrameParsing.FrameCallId(value);
+            if (gotCallId is null || !gotCallId.AsSpan().SequenceEqual(callId))
+            {
+                continue; // not ours -- see CallAsync's doc on this limitation
+            }
+            try
+            {
+                return CallFrameParsing.ParseCallResponse(value);
+            }
+            catch (ParseFrameException)
+            {
+                // Matching call_id but not a result/error shape: keep
+                // waiting, since nothing else in the protocol is expected
+                // to carry this call's id.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Send a signed PUBLISH. Fire-and-forget -- no reply is expected on
+    /// the wire; a subscriber (this session included, if subscribed to the
+    /// same topic/realm) receives an EVENT asynchronously, read via
+    /// <see cref="RecvAsync"/> / <see cref="RecvEventAsync"/>.
+    /// </summary>
+    public Task PublishAsync(PublishSpec spec, CancellationToken ct = default) =>
+        SendAsync(PublishFrame.Build(spec), ct);
+
+    public Task SubscribeAsync(SubscribeSpec spec, CancellationToken ct = default) =>
+        SendAsync(SubscribeFrame.Build(spec), ct);
+
+    public Task UnsubscribeAsync(UnsubscribeSpec spec, CancellationToken ct = default) =>
+        SendAsync(UnsubscribeFrame.Build(spec), ct);
+
+    /// <summary>
+    /// Registers this connection as the handler for `spec`'s
+    /// (realm, procedure). Fire-and-forget on the wire; the station then
+    /// routes inbound CALLs (control stream) and STREAM_OPENs (a fresh
+    /// dedicated stream -- see <see cref="AcceptDedicatedStreamAsync"/>)
+    /// for that procedure back to this connection.
+    /// </summary>
+    public Task AdvertiseAsync(AdvertiseSpec spec, CancellationToken ct = default) =>
+        SendAsync(AdvertiseFrame.Build(spec), ct);
+
+    public Task UnadvertiseAsync(UnadvertiseSpec spec, CancellationToken ct = default) =>
+        SendAsync(UnadvertiseFrame.Build(spec), ct);
+
+    /// <summary>
+    /// Read the next frame and parse it as an EVENT, bounded by
+    /// <paramref name="timeout"/>. Any non-EVENT frame received first is an
+    /// error, not silently skipped -- unlike <see cref="CallAsync"/>'s
+    /// response wait, a caller waiting specifically for a pubsub delivery
+    /// has no reason to expect anything else to legitimately arrive first.
+    /// </summary>
+    public async Task<EventInfo> RecvEventAsync(TimeSpan timeout, CancellationToken ct = default)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+        Value value;
+        try
+        {
+            value = await RecvAsync(timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException($"no event within {timeout}");
+        }
+        return EventFrameParsing.Parse(value);
+    }
+
+    /// <summary>
+    /// The provider role's counterpart to <see cref="CallAsync"/>: block for
+    /// the next inbound CALL frame on the control stream, bounded by
+    /// <paramref name="timeout"/>, look it up via <paramref name="lookup"/>,
+    /// invoke the matching handler, and send the resulting RESULT or ERROR
+    /// back over this same connection.
+    ///
+    /// Any non-CALL frame that arrives first (e.g. a stray EVENT from an
+    /// active <see cref="SubscribeAsync"/>, or a RESULT/ERROR for some other
+    /// in-flight <see cref="CallAsync"/>) is discarded, not queued -- the
+    /// same "control stream, one thing at a time" limitation
+    /// <see cref="CallAsync"/>'s own doc already carries. A session that
+    /// needs to serve CALLs and also act as a caller/subscriber concurrently
+    /// should use a second <see cref="Session"/>.
+    /// </summary>
+    public async Task ServeOneCallAsync(CallLookup lookup, TimeSpan timeout, CancellationToken ct = default)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+        try
+        {
+            await ServeOneCallInnerAsync(lookup, timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException("timed out waiting for an inbound CALL");
+        }
+    }
+
+    private async Task ServeOneCallInnerAsync(CallLookup lookup, CancellationToken ct)
+    {
+        while (true)
+        {
+            var value = await RecvAsync(ct).ConfigureAwait(false);
+            CallInfo callInfo;
+            try
+            {
+                callInfo = CallFrameParsing.ParseCall(value);
+            }
+            catch (ParseFrameException)
+            {
+                continue; // not ours -- see this method's doc on the limitation
+            }
+
+            var reply = await BuildCallReplyAsync(callInfo, lookup, Identity.NodeId()).ConfigureAwait(false);
+            await SendAsync(reply, ct).ConfigureAwait(false);
+            return;
+        }
+    }
+
+    /// <summary>
+    /// Mirrors `macula_station_link.erl`'s `handle_inbound_call/2` +
+    /// `safe_invoke_handler/4`: a lookup miss is unknown_next_peer; the
+    /// handler running to completion produces a RESULT, or a thrown
+    /// <see cref="CallHandlerException"/> produces unknown_error with its
+    /// message as `detail`; any OTHER thrown exception (an unexpected
+    /// crash) produces temporary_relay_failure with no detail, matching
+    /// the reference not sending one on a crash either.
+    /// </summary>
+    private static async Task<Value.MapValue> BuildCallReplyAsync(CallInfo callInfo, CallLookup lookup, byte[] selfPub)
+    {
+        var handler = lookup(callInfo.Realm, callInfo.Procedure);
+        if (handler is null)
+        {
+            return CallErrorFrame.Build(new CallErrorSpec { CallId = callInfo.CallId, Code = Bolt4Code.UnknownNextPeer, ReportedBy = selfPub });
+        }
+
+        try
+        {
+            var value = await handler(callInfo.Payload).ConfigureAwait(false);
+            return ResultFrame.Build(new ResultSpec { CallId = callInfo.CallId, Payload = value, RespondedBy = selfPub });
+        }
+        catch (CallHandlerException e)
+        {
+            return CallErrorFrame.Build(new CallErrorSpec { CallId = callInfo.CallId, Code = Bolt4Code.UnknownError, ReportedBy = selfPub, Detail = e.Message });
+        }
+        catch (Exception)
+        {
+            return CallErrorFrame.Build(new CallErrorSpec { CallId = callInfo.CallId, Code = Bolt4Code.TemporaryRelayFailure, ReportedBy = selfPub });
+        }
+    }
 
     /// <summary>Opens a fresh dedicated QUIC stream (streaming RPC session, content transfer).</summary>
     public async Task<FrameStream> OpenDedicatedStreamAsync(CancellationToken ct = default)
