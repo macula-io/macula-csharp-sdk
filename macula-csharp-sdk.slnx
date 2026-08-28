@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/examples-fsharp/">
+    <Project Path="examples-fsharp/Macula.Examples.FSharp.fsproj" />
+  </Folder>
   <Folder Name="/examples/">
     <Project Path="examples/Macula.Examples.csproj" />
   </Folder>

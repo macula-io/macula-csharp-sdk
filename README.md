@@ -106,7 +106,8 @@ src/Macula/
   Connection/               QUIC transport, handshake, Session (RPC/PubSub/serve)
   Content/                  Manifest (chunking/Merkle), put/get
   Streaming/                StreamHandle -- caller and provider roles
-examples/                  One example per primitive (see below)
+examples/                  One example per primitive, plus error handling and a long-running provider (C#)
+examples-fsharp/           The same examples in F#
 tests/Macula.Tests/         Offline unit tests + live station tests
 ```
 
@@ -131,21 +132,47 @@ Console.WriteLine($"connected -- station node_id = {Convert.ToHexStringLower(ses
 
 ## Examples
 
-| # | Run | What it shows |
-|---|---|---|
-| 01 | `dotnet run --project examples -- 01` | Identity + connect + close |
-| 02 | `dotnet run --project examples -- 02` | Unary RPC caller (CALL/RESULT/ERROR) |
-| 03 | `dotnet run --project examples -- 03` | PubSub (subscribe, publish, receive the EVENT) |
-| 04 | `dotnet run --project examples -- 04` | Content transfer, single-block and chunked |
-| 05 | `dotnet run --project examples -- 05` | Streaming RPC, caller role |
-| 06 | `dotnet run --project examples -- 06` | Unary RPC, provider role (two `Session`s, one process) |
-| 07 | `dotnet run --project examples -- 07` | Streaming RPC, provider role (two `Session`s, one process) |
+Every example exists in both `examples/` (C#) and `examples-fsharp/` (F#)
+with matching numbers and behavior — same station calls, same output shape.
 
-Examples 06 and 07 run both roles in **one process, two `Session`s** —
-there's no cgo/fork hazard here the way there was in
+| # | Run (C#) | Run (F#) | What it shows |
+|---|---|---|---|
+| 01 | `dotnet run --project examples -- 01` | `dotnet run --project examples-fsharp -- 01` | Identity + connect + close |
+| 02 | `dotnet run --project examples -- 02` | `dotnet run --project examples-fsharp -- 02` | Unary RPC caller (CALL/RESULT/ERROR) |
+| 03 | `dotnet run --project examples -- 03` | `dotnet run --project examples-fsharp -- 03` | PubSub (subscribe, publish, receive the EVENT) |
+| 04 | `dotnet run --project examples -- 04` | `dotnet run --project examples-fsharp -- 04` | Content transfer, single-block and chunked |
+| 05 | `dotnet run --project examples -- 05` | `dotnet run --project examples-fsharp -- 05` | Streaming RPC, caller role |
+| 06 | `dotnet run --project examples -- 06` | `dotnet run --project examples-fsharp -- 06` | Unary RPC, provider role (two `Session`s, one process) |
+| 07 | `dotnet run --project examples -- 07` | `dotnet run --project examples-fsharp -- 07` | Streaming RPC, provider role (two `Session`s, one process) |
+| 08 | `dotnet run --project examples -- 08` | `dotnet run --project examples-fsharp -- 08` | Every error shape this SDK produces, handled |
+| 09 | `dotnet run --project examples -- 09` | `dotnet run --project examples-fsharp -- 09` | A provider serving many calls over its lifetime, not just one |
+
+Examples 06, 07, and 09 run more than one role in **one process, multiple
+`Session`s** — there's no cgo/fork hazard here the way there was in
 [`macula-php-sdk`](https://github.com/macula-io/macula-php-sdk)'s
-FFI-over-Go binding, so a provider and a caller can just be two `Task`s
-in the same `async` method.
+FFI-over-Go binding, so a provider and a caller can just be concurrent
+tasks in the same async function.
+
+## Using this from F#
+
+Nothing about this library is C#-specific — it's a plain .NET assembly,
+and `examples-fsharp/` is live-verified against the real station exactly
+like its C# counterpart. Two things are worth knowing if you haven't
+mixed F# with a C#-authored async API before:
+
+- **Prefer F#'s `task { }` computation expression over `async { } |>
+  Async.AwaitTask`.** Several methods here (`Session.CloseAsync`,
+  `StreamHandle.AbortAsync`) return `ValueTask`, and `Async.AwaitTask`
+  has no overload for that — it only accepts `Task`/`Task<'T>`, so you'd
+  need an extra `.AsTask()` call on every such site. `task { }` awaits
+  `ValueTask`/`ValueTask<'T>` directly, no conversion needed, confirmed
+  directly rather than assumed (see `examples-fsharp/`, which uses `task { }`
+  throughout).
+- **`required`-property spec types** (`CallSpec`, `PublishSpec`,
+  `SubscribeSpec`, `AdvertiseSpec`, and friends) construct the same way
+  any C# object with settable properties does from F#: parens with named
+  assignments, e.g. `SubscribeSpec(Topic = topic, Realm = realm, Subscriber
+  = identity.NodeId())` — not C#'s `{ }` object-initializer braces.
 
 ## Testing
 
