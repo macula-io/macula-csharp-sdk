@@ -56,7 +56,7 @@ this protocol's specific canonicalization rules — see
 [The CBOR codec is hand-rolled on purpose](#the-cbor-codec-is-hand-rolled-on-purpose)).
 No cgo, no native `.so`/`.dll` shipped by this repo, no P/Invoke into
 anything macula-specific — `dotnet add package Macula.Client` is the
-whole install.
+whole install (once published to nuget.org — see [Status](#status)).
 
 The one native dependency that's unavoidable regardless of approach is
 QUIC itself: `System.Net.Quic` needs `libmsquic`, which Microsoft doesn't
@@ -232,6 +232,12 @@ Not built, matching every sibling SDK's own documented v1 scope: DHT,
 HyParView, Plumtree gossip primitives — these are station-to-station
 overlay concerns, explicitly out of scope for a leaf client by design,
 not an unfinished gap.
+
+**NuGet publish:** not live yet. `.github/workflows/release.yml` publishes
+via [NuGet Trusted Publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing)
+(OIDC, no stored API key) on every `v*` tag push — set up and ready, just
+not fired yet. Until then, consume this library via a project reference,
+a local `dotnet pack`, or a `ProjectReference` to this repo directly.
 
 ## License
 
