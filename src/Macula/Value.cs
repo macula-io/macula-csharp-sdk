@@ -26,7 +26,64 @@ public abstract record Value
 
     public sealed record ListValue(IReadOnlyList<Value> Items) : Value;
 
-    public sealed record MapValue(IReadOnlyList<KeyValuePair<Value, Value>> Entries) : Value;
+    public sealed record MapValue(IReadOnlyList<KeyValuePair<Value, Value>> Entries) : Value
+    {
+        /// <summary>
+        /// Returns a new map with <paramref name="key"/> set to
+        /// <paramref name="value"/> -- replacing an existing entry for that
+        /// key rather than appending a duplicate. This value model's Map is
+        /// a plain ordered list of pairs, not a real map, so appending
+        /// blindly on top of a sentinel field the envelope already set
+        /// (e.g. <c>base()</c>'s <c>call_id =&gt; null</c>) would silently
+        /// produce a wire-invalid map with two entries for the same key
+        /// instead of overriding it.
+        /// </summary>
+        public MapValue WithField(string key, Value value)
+        {
+            var entries = new List<KeyValuePair<Value, Value>>(Entries.Count + 1);
+            var replaced = false;
+            foreach (var entry in Entries)
+            {
+                if (!replaced && entry.Key is TextValue t && Encoding.UTF8.GetString(t.Utf8) == key)
+                {
+                    entries.Add(new KeyValuePair<Value, Value>(Text(key), value));
+                    replaced = true;
+                }
+                else
+                {
+                    entries.Add(entry);
+                }
+            }
+            if (!replaced)
+            {
+                entries.Add(new KeyValuePair<Value, Value>(Text(key), value));
+            }
+            return new MapValue(entries);
+        }
+
+        /// <summary>Returns this map with the given keys removed, if present.</summary>
+        public MapValue Without(params string[] keys)
+        {
+            var keySet = new HashSet<string>(keys);
+            var entries = Entries
+                .Where(entry => entry.Key is not TextValue t || !keySet.Contains(Encoding.UTF8.GetString(t.Utf8)))
+                .ToList();
+            return new MapValue(entries);
+        }
+
+        /// <summary>Looks up a field by its text key, or null if absent.</summary>
+        public Value? Get(string key)
+        {
+            foreach (var entry in Entries)
+            {
+                if (entry.Key is TextValue t && Encoding.UTF8.GetString(t.Utf8) == key)
+                {
+                    return entry.Value;
+                }
+            }
+            return null;
+        }
+    }
 
     public sealed record NullValue : Value;
 
