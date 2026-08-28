@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>Macula.Client</PackageId>
+    <RootNamespace>Macula</RootNamespace>
+    <AssemblyName>Macula.Client</AssemblyName>
+    <Description>Native C# client for the Macula mesh wire protocol -- QUIC transport, deterministic CBOR, Ed25519 identity, unary RPC, PubSub, content transfer, and streaming RPC (both caller and provider roles). No FFI, no native protocol library.</Description>
+    <Authors>Macula</Authors>
+    <PackageLicenseExpression>Apache-2.0 OR MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/macula-io/macula-csharp-sdk</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/macula-io/macula-csharp-sdk</RepositoryUrl>
+    <PackageTags>macula;mesh;quic;rpc;pubsub;wire-protocol</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.5.1" />
+    <PackageReference Include="Microsoft.Native.Quic.MsQuic.OpenSSL" Version="2.6.0" />
+  </ItemGroup>
+
+</Project>
