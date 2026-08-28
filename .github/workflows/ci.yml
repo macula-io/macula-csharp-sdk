@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
 
 jobs:
@@ -27,47 +26,3 @@ jobs:
       # Run those manually:
       #   dotnet test --filter Category=Live
       - run: dotnet test --no-build --configuration Release --filter "Category!=Live"
-
-  publish:
-    name: publish to NuGet
-    # Tag pushes only (v1.2.3-style) -- never on a branch push or PR. The
-    # NuGet.org Trusted Publishing policy for this package is pinned to
-    # this exact workflow filename (ci.yml) and this exact environment
-    # (release); both must match verbatim or the OIDC exchange is
-    # rejected with "no matching policy".
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Validate version matches project
-        run: |
-          PROJECT_VERSION=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/Macula/Macula.Client.csproj)
-          if [ "$PROJECT_VERSION" != "${{ steps.version.outputs.VERSION }}" ]; then
-            echo "::error::Tag version (${{ steps.version.outputs.VERSION }}) doesn't match project version ($PROJECT_VERSION)"
-            exit 1
-          fi
-
-      - name: Pack
-        run: dotnet pack src/Macula/Macula.Client.csproj -c Release -o ./artifacts
-
-      - name: NuGet login (OIDC)
-        id: login
-        uses: NuGet/login@v1
-        with:
-          user: ${{ secrets.NUGET_USER }}
-
-      - name: Push to NuGet
-        run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

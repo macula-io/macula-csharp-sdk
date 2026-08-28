@@ -1,0 +1,51 @@
+name: Release to NuGet
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    name: publish to NuGet
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate version matches project
+        run: |
+          PROJECT_VERSION=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/Macula/Macula.Client.csproj)
+          if [ "$PROJECT_VERSION" != "${{ steps.version.outputs.VERSION }}" ]; then
+            echo "::error::Tag version (${{ steps.version.outputs.VERSION }}) doesn't match project version ($PROJECT_VERSION)"
+            exit 1
+          fi
+
+      # Rebuilds and re-runs the offline suite here rather than trusting
+      # an artifact from the CI workflow -- this workflow triggers off a
+      # tag push, which is a separate event from the branch push CI
+      # already validated, so there's no prior run's output to reuse.
+      - run: dotnet restore
+      - run: dotnet build --no-restore --configuration Release
+      - run: dotnet test --no-build --configuration Release --filter "Category!=Live"
+
+      - name: Pack
+        run: dotnet pack src/Macula/Macula.Client.csproj -c Release -o ./artifacts
+
+      - name: NuGet login (OIDC)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push to NuGet
+        run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
