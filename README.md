@@ -1,6 +1,6 @@
-# macula-csharp-sdk
+# macula-dotnet-sdk
 
-[![CI](https://img.shields.io/github/actions/workflow/status/macula-io/macula-csharp-sdk/ci.yml?branch=main&label=CI)](https://github.com/macula-io/macula-csharp-sdk/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/macula-io/macula-dotnet-sdk/ci.yml?branch=main&label=CI)](https://github.com/macula-io/macula-dotnet-sdk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
 [![.NET](https://img.shields.io/badge/.NET-10.0%2B-512BD4?logo=dotnet)](https://dotnet.microsoft.com)
 [![no FFI](https://img.shields.io/badge/FFI-none-success.svg)](#why-native-not-a-binding)
@@ -8,13 +8,14 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/macula-csharp-full-dark.svg">
-    <img src="assets/macula-csharp-full-light.svg" alt="Macula" width="320">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/macula-dotnet-full-dark.svg">
+    <img src="assets/macula-dotnet-full-light.svg" alt="Macula" width="320">
   </picture>
 </p>
 
 <p align="center">
-  <strong>Native C# port of the Macula SDK wire protocol</strong>
+  <strong>Native .NET client for the Macula SDK wire protocol</strong><br>
+  written in C#, usable from any .NET language
 </p>
 
 ---
@@ -32,7 +33,7 @@
 
 ## What is this?
 
-A native C# implementation of the client half of Macula's wire protocol —
+A native .NET implementation, written in C#, of the client half of Macula's wire protocol —
 the same protocol [`macula-io/macula`](https://github.com/macula-io/macula)
 (the Erlang/OTP SDK) speaks, and the same protocol
 [`macula-go-sdk`](https://github.com/macula-io/macula-go-sdk) and
@@ -277,7 +278,7 @@ The C# emblem in this README's header logo is Microsoft's [official C#
 geometric shapes, it doesn't meet the threshold of originality for
 copyright and is in the public domain, though "C#" itself remains a
 Microsoft trademark. Used here (as part of
-`assets/macula-csharp-full-{dark,light}.svg`) purely to identify the
+`assets/macula-dotnet-full-{dark,light}.svg`) purely to identify the
 language this SDK is written in, the same way the sibling
 [macula-go-sdk](https://github.com/macula-io/macula-go-sdk) and
 [macula-rust-sdk](https://github.com/macula-io/macula-rust-sdk) badges

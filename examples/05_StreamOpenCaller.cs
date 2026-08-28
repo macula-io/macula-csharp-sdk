@@ -32,7 +32,7 @@ public static class StreamOpenCaller
             deadlineMs,
             identity);
 
-        await handle.SendDataAsync(StreamEncoding.Raw, Value.Bytes("hello from macula-csharp-sdk"u8.ToArray()), identity);
+        await handle.SendDataAsync(StreamEncoding.Raw, Value.Bytes("hello from macula-dotnet-sdk"u8.ToArray()), identity);
         await handle.CloseSendAsync(identity);
         Console.WriteLine("sent one chunk and half-closed");
 

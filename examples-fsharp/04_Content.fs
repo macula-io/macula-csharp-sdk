@@ -14,7 +14,7 @@ let run () =
         let! session = Session.ConnectAsync(Station.Host, Station.Port, identity, Trust.UseWebPki)
 
         // Single block: fits in one chunk, addressed purely by content hash.
-        let small = Encoding.UTF8.GetBytes "hello from macula-csharp-sdk (F#)"
+        let small = Encoding.UTF8.GetBytes "hello from macula-dotnet-sdk (F#)"
         let! smallMcid = ContentTransfer.PutAsync(session, small, "greeting.txt", identity)
         printfn "put single block, mcid=%s (chunked=%b)" (Convert.ToHexStringLower smallMcid) (Mcid.IsChunked smallMcid)
 

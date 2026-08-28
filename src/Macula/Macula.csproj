@@ -12,13 +12,13 @@
     <RootNamespace>Macula</RootNamespace>
     <AssemblyName>Macula</AssemblyName>
     <Version>0.1.1</Version>
-    <Description>Native C# client for the Macula mesh wire protocol -- QUIC transport, deterministic CBOR, Ed25519 identity, unary RPC, PubSub, content transfer, and streaming RPC (both caller and provider roles). No FFI, no native protocol library.</Description>
+    <Description>Native .NET client for the Macula mesh wire protocol -- QUIC transport, deterministic CBOR, Ed25519 identity, unary RPC, PubSub, content transfer, and streaming RPC (both caller and provider roles). Written in C#, usable from any .NET language (examples included for both C# and F#). No FFI, no native protocol library.</Description>
     <Authors>Macula</Authors>
     <PackageLicenseExpression>Apache-2.0 OR MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/macula-io/macula-csharp-sdk</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/macula-io/macula-csharp-sdk</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/macula-io/macula-dotnet-sdk</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/macula-io/macula-dotnet-sdk</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>macula;mesh;quic;rpc;pubsub;wire-protocol</PackageTags>
+    <PackageTags>macula;mesh;quic;rpc;pubsub;wire-protocol;dotnet;csharp;fsharp</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
