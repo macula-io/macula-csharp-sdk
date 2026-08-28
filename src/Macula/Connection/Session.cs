@@ -95,6 +95,15 @@ public sealed class Session : IAsyncDisposable
             RemoteEndPoint = new DnsEndPoint(host, port),
             DefaultStreamErrorCode = 0,
             DefaultCloseErrorCode = 0,
+            // System.Net.Quic defaults to accepting ZERO inbound streams,
+            // unlike quinn (Rust's QUIC crate), which accepts by default --
+            // a client must opt in explicitly or AcceptInboundStreamAsync
+            // throws. This session needs inbound capacity regardless of
+            // whether the caller ever advertises a procedure, since the
+            // decision to advertise happens after the connection already
+            // exists.
+            MaxInboundBidirectionalStreams = 100,
+            MaxInboundUnidirectionalStreams = 100,
             ClientAuthenticationOptions = new SslClientAuthenticationOptions
             {
                 ApplicationProtocols = new List<SslApplicationProtocol> { new("macula") },

@@ -3,6 +3,7 @@ using Macula.Connection;
 using Macula.Content;
 using Macula.Frame;
 using Macula.Identity;
+using Macula.Streaming;
 
 namespace Macula.Tests;
 
@@ -130,5 +131,102 @@ public class LiveStationTests
         var ex = await Assert.ThrowsAsync<ContentTransfer.ContentTransferException>(
             () => ContentTransfer.GetAsync(session, madeUp, identity));
         Assert.Equal(ContentTransfer.RemoteReason.NotFound, ex.Reason);
+    }
+
+    /// <summary>
+    /// Two independent connections to the SAME live station: one advertises
+    /// a procedure and accepts inbound streams for it (provider role), the
+    /// other dials in and pushes/pulls data against it (caller role).
+    /// </summary>
+    [Fact]
+    public async Task Streaming_provider_round_trip_against_the_live_fleet()
+    {
+        var providerIdentity = KeyPair.GenerateWithDefaultPuzzle();
+        var callerIdentity = KeyPair.GenerateWithDefaultPuzzle();
+
+        await using var providerSession = await Session.ConnectAsync(StationHost, StationPort, providerIdentity, Connection.Trust.UseWebPki);
+        await using var callerSession = await Session.ConnectAsync(StationHost, StationPort, callerIdentity, Connection.Trust.UseWebPki);
+
+        var realm = new byte[32];
+        Random.Shared.NextBytes(realm);
+        var procedure = $"macula_csharp_sdk.test_provider.{Guid.NewGuid():N}";
+
+        await providerSession.AdvertiseAsync(new AdvertiseSpec { Realm = realm, Procedure = procedure, Advertiser = providerIdentity.NodeId() });
+        await Task.Delay(500); // give the station a moment to register the advertisement
+
+        var acceptTask = StreamHandle.AcceptAsync(providerSession, TimeSpan.FromSeconds(10));
+
+        var deadline = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 10_000;
+        var callerHandle = await StreamHandle.OpenAsync(callerSession, procedure, realm, StreamMode.ServerStream, Value.Null, deadline, callerIdentity);
+
+        var (providerHandle, openInfo) = await acceptTask;
+        Assert.Equal(procedure, openInfo.Procedure);
+        Assert.Equal(StreamMode.ServerStream, openInfo.Mode);
+
+        await providerHandle.SendDataAsync(StreamEncoding.Raw, Value.Bytes("hello from the provider"u8.ToArray()), providerIdentity);
+        await providerHandle.CloseSendAsync(providerIdentity);
+
+        var item = await callerHandle.RecvAsync(TimeSpan.FromSeconds(5));
+        var data = Assert.IsType<StreamItem.Data>(item);
+        Assert.Equal("hello from the provider"u8.ToArray(), data.Body.AsBytes());
+
+        Assert.Equal(StreamItem.Eof, await callerHandle.RecvAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    /// <summary>
+    /// The unary-RPC counterpart to the streaming provider test: two
+    /// independent connections, one advertising and serving inbound CALLs
+    /// via <see cref="Session.ServeOneCallAsync"/>, the other dialing in
+    /// and calling it.
+    /// </summary>
+    [Fact]
+    public async Task Unary_call_provider_round_trip_against_the_live_fleet()
+    {
+        var providerIdentity = KeyPair.GenerateWithDefaultPuzzle();
+        var callerIdentity = KeyPair.GenerateWithDefaultPuzzle();
+
+        await using var providerSession = await Session.ConnectAsync(StationHost, StationPort, providerIdentity, Connection.Trust.UseWebPki);
+        await using var callerSession = await Session.ConnectAsync(StationHost, StationPort, callerIdentity, Connection.Trust.UseWebPki);
+
+        var realm = new byte[32];
+        Random.Shared.NextBytes(realm);
+        var procedure = $"macula_csharp_sdk.test_add.{Guid.NewGuid():N}";
+
+        await providerSession.AdvertiseAsync(new AdvertiseSpec { Realm = realm, Procedure = procedure, Advertiser = providerIdentity.NodeId() });
+        await Task.Delay(500);
+
+        CallLookup lookup = (_, proc) =>
+        {
+            if (proc != procedure)
+            {
+                return null;
+            }
+            return async payload =>
+            {
+                if (payload is not Value.MapValue map
+                    || map.Get("a") is not Value.UIntValue a
+                    || map.Get("b") is not Value.UIntValue b)
+                {
+                    throw new CallHandlerException("missing or non-integer field \"a\" or \"b\"");
+                }
+                await Task.CompletedTask;
+                return Value.UInt(a.Value + b.Value);
+            };
+        };
+
+        var serveTask = providerSession.ServeOneCallAsync(lookup, TimeSpan.FromSeconds(15));
+
+        var payload = Value.Map(new[]
+        {
+            new KeyValuePair<Value, Value>(Value.Text("a"), Value.UInt(3)),
+            new KeyValuePair<Value, Value>(Value.Text("b"), Value.UInt(4)),
+        });
+        var deadline = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 10_000;
+        var response = await callerSession.CallAsync(procedure, realm, payload, deadline, TimeSpan.FromSeconds(10));
+
+        await serveTask;
+
+        var result = Assert.IsType<CallResponse.Result>(response);
+        Assert.Equal(7UL, ((Value.UIntValue)result.Payload).Value);
     }
 }
