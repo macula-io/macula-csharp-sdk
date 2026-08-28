@@ -181,55 +181,8 @@ public sealed class Session : IAsyncDisposable
     /// time on the control stream, not yet correct for CALL and
     /// PUBLISH/SUBSCRIBE used concurrently on it.
     /// </summary>
-    public async Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, CancellationToken ct = default)
-    {
-        var callId = new byte[16];
-        Random.Shared.NextBytes(callId);
-        var spec = new CallSpec
-        {
-            CallId = callId,
-            Procedure = procedure,
-            Realm = realm,
-            Payload = payload,
-            DeadlineMs = deadlineMs,
-            Caller = Identity.NodeId(),
-        };
-        await SendAsync(CallFrame.Build(spec), ct).ConfigureAwait(false);
-
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(timeout);
-        try
-        {
-            return await AwaitCallResponseAsync(callId, timeoutCts.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            throw new TimeoutException($"no response for call_id {Convert.ToHexStringLower(callId)} within {timeout}");
-        }
-    }
-
-    private async Task<CallResponse> AwaitCallResponseAsync(byte[] callId, CancellationToken ct)
-    {
-        while (true)
-        {
-            var value = await RecvAsync(ct).ConfigureAwait(false);
-            var gotCallId = CallFrameParsing.FrameCallId(value);
-            if (gotCallId is null || !gotCallId.AsSpan().SequenceEqual(callId))
-            {
-                continue; // not ours -- see CallAsync's doc on this limitation
-            }
-            try
-            {
-                return CallFrameParsing.ParseCallResponse(value);
-            }
-            catch (ParseFrameException)
-            {
-                // Matching call_id but not a result/error shape: keep
-                // waiting, since nothing else in the protocol is expected
-                // to carry this call's id.
-            }
-        }
-    }
+    public Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, CancellationToken ct = default) =>
+        _control.CallAsync(procedure, realm, payload, deadlineMs, Identity, timeout, ct);
 
     /// <summary>
     /// Send a signed PUBLISH. Fire-and-forget -- no reply is expected on

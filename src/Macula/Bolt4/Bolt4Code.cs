@@ -49,4 +49,7 @@ public readonly record struct Bolt4Code(byte Value, string Name, RetryPolicy Ret
 
     public static Bolt4Code FromValue(byte value) =>
         All.FirstOrDefault(c => c.Value == value, new Bolt4Code(value, "unknown_error", RetryPolicy.LogAndCaution));
+
+    /// <summary>`none`, `application`, and `crypto_drop` are the three non-retryable policies; everything else means retry, differently.</summary>
+    public bool IsRetryable => Retry is not (RetryPolicy.None or RetryPolicy.Application or RetryPolicy.CryptoDrop);
 }

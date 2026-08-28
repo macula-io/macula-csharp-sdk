@@ -1,4 +1,5 @@
 using Macula.Frame;
+using Macula.Identity;
 
 namespace Macula.Connection;
 
@@ -42,6 +43,59 @@ public sealed class FrameStream
                 throw new EndOfStreamException("stream closed before a complete frame arrived");
             }
             Append(_readScratch.AsSpan(0, n));
+        }
+    }
+
+    /// <summary>
+    /// Send a signed CALL and wait for the matching RESULT or ERROR,
+    /// correlated by call_id. On this stream specifically (a dedicated
+    /// stream, never the control stream) nothing else ever arrives to
+    /// discard -- the same "one thing at a time" limitation
+    /// <see cref="Session.CallAsync"/> documents for the control stream
+    /// doesn't apply here, since a dedicated stream carries only this one
+    /// exchange's frames.
+    /// </summary>
+    public async Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, KeyPair identity, TimeSpan timeout, CancellationToken ct = default)
+    {
+        var callId = new byte[16];
+        Random.Shared.NextBytes(callId);
+        var spec = new CallSpec
+        {
+            CallId = callId,
+            Procedure = procedure,
+            Realm = realm,
+            Payload = payload,
+            DeadlineMs = deadlineMs,
+            Caller = identity.NodeId(),
+        };
+        var signed = Envelope.Sign(CallFrame.Build(spec), identity);
+        await SendFrameAsync(signed, ct).ConfigureAwait(false);
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+        try
+        {
+            while (true)
+            {
+                var value = await RecvFrameAsync(timeoutCts.Token).ConfigureAwait(false);
+                var gotCallId = CallFrameParsing.FrameCallId(value);
+                if (gotCallId is null || !gotCallId.AsSpan().SequenceEqual(callId))
+                {
+                    continue;
+                }
+                try
+                {
+                    return CallFrameParsing.ParseCallResponse(value);
+                }
+                catch (ParseFrameException)
+                {
+                    // matching call_id, unexpected shape: keep waiting.
+                }
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException($"no response for call_id {Convert.ToHexStringLower(callId)} within {timeout}");
         }
     }
 

@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using Macula.Connection;
+using Macula.Content;
 using Macula.Frame;
 using Macula.Identity;
 
@@ -86,5 +87,48 @@ public class LiveStationTests
         Assert.Equal(topic, evt.Topic);
         Assert.Equal("hello mesh", evt.Payload.AsText());
         Assert.Equal("direct", evt.DeliveredVia);
+    }
+
+    [Fact]
+    public async Task Content_put_get_round_trips_a_single_block()
+    {
+        var identity = KeyPair.GenerateWithDefaultPuzzle();
+        await using var session = await Session.ConnectAsync(StationHost, StationPort, identity, Connection.Trust.UseWebPki);
+
+        var data = "hello from macula-csharp-sdk, single block"u8.ToArray();
+        var mcid = await ContentTransfer.PutAsync(session, data, "greeting.txt", identity);
+        Assert.False(Mcid.IsChunked(mcid));
+
+        var fetched = await ContentTransfer.GetAsync(session, mcid, identity);
+        Assert.Equal(data, fetched);
+    }
+
+    [Fact]
+    public async Task Content_put_get_round_trips_chunked_content()
+    {
+        var identity = KeyPair.GenerateWithDefaultPuzzle();
+        await using var session = await Session.ConnectAsync(StationHost, StationPort, identity, Connection.Trust.UseWebPki);
+
+        // 3 chunks at the default 256 KiB chunk size.
+        var data = new byte[ManifestBuilder.DefaultChunkSize * 2 + 12345];
+        Random.Shared.NextBytes(data);
+
+        var mcid = await ContentTransfer.PutAsync(session, data, "big-file.bin", identity);
+        Assert.True(Mcid.IsChunked(mcid));
+
+        var fetched = await ContentTransfer.GetAsync(session, mcid, identity);
+        Assert.Equal(data, fetched);
+    }
+
+    [Fact]
+    public async Task Content_get_reports_not_found_for_a_made_up_mcid()
+    {
+        var identity = KeyPair.GenerateWithDefaultPuzzle();
+        await using var session = await Session.ConnectAsync(StationHost, StationPort, identity, Connection.Trust.UseWebPki);
+
+        var madeUp = ManifestBuilder.BlockMcid("this content was never actually stored"u8.ToArray());
+        var ex = await Assert.ThrowsAsync<ContentTransfer.ContentTransferException>(
+            () => ContentTransfer.GetAsync(session, madeUp, identity));
+        Assert.Equal(ContentTransfer.RemoteReason.NotFound, ex.Reason);
     }
 }
