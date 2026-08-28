@@ -7,6 +7,13 @@
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow.svg)](https://buymeacoffee.com/rlefever)
 
 <p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/macula-csharp-full-dark.svg">
+    <img src="assets/macula-csharp-full-light.svg" alt="Macula" width="320">
+  </picture>
+</p>
+
+<p align="center">
   <strong>Native C# port of the Macula SDK wire protocol</strong>
 </p>
 
@@ -230,3 +237,17 @@ not an unfinished gap.
 
 Dual-licensed under Apache-2.0 or MIT, at your option — see
 [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
+
+The C# emblem in this README's header logo is Microsoft's [official C#
+2023 logo](https://commons.wikimedia.org/wiki/File:C_Sharp_Logo_2023.svg)
+(designed by Scott Baker at Pentagram) — consisting only of simple
+geometric shapes, it doesn't meet the threshold of originality for
+copyright and is in the public domain, though "C#" itself remains a
+Microsoft trademark. Used here (as part of
+`assets/macula-csharp-full-{dark,light}.svg`) purely to identify the
+language this SDK is written in, the same way the sibling
+[macula-go-sdk](https://github.com/macula-io/macula-go-sdk) and
+[macula-rust-sdk](https://github.com/macula-io/macula-rust-sdk) badges
+use the Go gopher and Rust gear marks, and
+[macula-php-sdk](https://github.com/macula-io/macula-php-sdk) uses the
+official PHP logo — not an endorsement by Microsoft.
