@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\src\Macula\Macula.Client.csproj" />
+    <ProjectReference Include="..\src\Macula\Macula.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

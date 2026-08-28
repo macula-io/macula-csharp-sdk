@@ -24,7 +24,7 @@ jobs:
 
       - name: Validate version matches project
         run: |
-          PROJECT_VERSION=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/Macula/Macula.Client.csproj)
+          PROJECT_VERSION=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/Macula/Macula.csproj)
           if [ "$PROJECT_VERSION" != "${{ steps.version.outputs.VERSION }}" ]; then
             echo "::error::Tag version (${{ steps.version.outputs.VERSION }}) doesn't match project version ($PROJECT_VERSION)"
             exit 1
@@ -39,7 +39,7 @@ jobs:
       - run: dotnet test --no-build --configuration Release --filter "Category!=Live"
 
       - name: Pack
-        run: dotnet pack src/Macula/Macula.Client.csproj -c Release -o ./artifacts
+        run: dotnet pack src/Macula/Macula.csproj -c Release -o ./artifacts
 
       - name: NuGet login (OIDC)
         id: login

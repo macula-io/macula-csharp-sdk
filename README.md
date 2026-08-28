@@ -55,7 +55,7 @@ of them. Two things make that practical for C# where it wasn't for PHP:
 this protocol's specific canonicalization rules — see
 [The CBOR codec is hand-rolled on purpose](#the-cbor-codec-is-hand-rolled-on-purpose)).
 No cgo, no native `.so`/`.dll` shipped by this repo, no P/Invoke into
-anything macula-specific — `dotnet add package Macula.Client` is the
+anything macula-specific — `dotnet add package Macula` is the
 whole install (once published to nuget.org — see [Status](#status)).
 
 The one native dependency that's unavoidable regardless of approach is

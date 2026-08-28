@@ -8,9 +8,9 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <PackageId>Macula.Client</PackageId>
+    <PackageId>Macula</PackageId>
     <RootNamespace>Macula</RootNamespace>
-    <AssemblyName>Macula.Client</AssemblyName>
+    <AssemblyName>Macula</AssemblyName>
     <Version>0.1.0</Version>
     <Description>Native C# client for the Macula mesh wire protocol -- QUIC transport, deterministic CBOR, Ed25519 identity, unary RPC, PubSub, content transfer, and streaming RPC (both caller and provider roles). No FFI, no native protocol library.</Description>
     <Authors>Macula</Authors>

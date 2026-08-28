@@ -4,7 +4,7 @@
   </Folder>
   <Folder Name="/src/" />
   <Folder Name="/src/Macula/">
-    <Project Path="src/Macula/Macula.Client.csproj" />
+    <Project Path="src/Macula/Macula.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Macula.Tests/Macula.Tests.csproj" />
