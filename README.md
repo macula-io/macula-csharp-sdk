@@ -272,14 +272,14 @@ a local `dotnet pack`, or a `ProjectReference` to this repo directly.
 Dual-licensed under Apache-2.0 or MIT, at your option — see
 [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
 
-The C# emblem in this README's header logo is Microsoft's [official C#
-2023 logo](https://commons.wikimedia.org/wiki/File:C_Sharp_Logo_2023.svg)
-(designed by Scott Baker at Pentagram) — consisting only of simple
-geometric shapes, it doesn't meet the threshold of originality for
-copyright and is in the public domain, though "C#" itself remains a
-Microsoft trademark. Used here (as part of
+The .NET emblem in this README's header logo is Microsoft's official
+[.NET logo](https://github.com/dotnet/brand/blob/main/logo/dotnet-logo.svg)
+(from the `dotnet/brand` repository), licensed
+[CC0 1.0 Universal](https://github.com/dotnet/brand/blob/main/LICENSE) —
+a public-domain dedication, no attribution legally required, credited
+here anyway as a matter of course. Used here (as part of
 `assets/macula-dotnet-full-{dark,light}.svg`) purely to identify the
-language this SDK is written in, the same way the sibling
+platform this SDK targets, the same way the sibling
 [macula-go-sdk](https://github.com/macula-io/macula-go-sdk) and
 [macula-rust-sdk](https://github.com/macula-io/macula-rust-sdk) badges
 use the Go gopher and Rust gear marks, and
