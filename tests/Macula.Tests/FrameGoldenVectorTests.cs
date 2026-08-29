@@ -295,6 +295,35 @@ public class FrameGoldenVectorTests
     }
 
     /// <summary>
+    /// The vector this SDK was missing until 2026-08-29: `Signer` present,
+    /// matching what every real <see cref="Macula.Streaming.StreamHandle"/>
+    /// call site now sends. Generated live against
+    /// `macula_frame:stream_data/1` with `signer => Pub` in the spec map
+    /// (`rebar3 shell`, same identity/frame_id/stream_id/sent_at_ms
+    /// fixture as every vector in this file) -- not guessed from the
+    /// field's shape. Ported verbatim from macula-rust-sdk's own vector
+    /// of the same name, same fixture, same signature.
+    /// </summary>
+    [Fact]
+    public void Stream_data_with_signer_matches_the_reference_byte_for_byte()
+    {
+        var spec = new StreamDataSpec
+        {
+            StreamId = StreamId,
+            Seq = 0,
+            Encoding = StreamEncoding.Raw,
+            Body = Value.Bytes("raw chunk bytes"u8.ToArray()),
+            Signer = PubBytes,
+        };
+        var signed = Envelope.Sign(StreamDataFrame.Build(spec, FrameId, VectorSentAtMs), Identity);
+
+        Assert.Equal(
+            "3EA0B6B6DB1549D2EA42AF015A477FCD6D00B11F48F9CC07AF0914CAC18F22B5C12E5EE446811388F207D688960B67D9BEE7B4D998BE02F2B1426B6C4A06D307",
+            SigHex(signed));
+        Assert.Equal(310, WireCodec.Encode(signed).Length);
+    }
+
+    /// <summary>
     /// The real point of this vector: `encoding = msgpack` with a
     /// structured body still matches the reference's signature
     /// byte-for-byte -- proving `body` is encoded as an ordinary nested
@@ -337,6 +366,19 @@ public class FrameGoldenVectorTests
         Assert.Equal(239, WireCodec.Encode(signed).Length);
     }
 
+    /// <summary>See Stream_data_with_signer's doc -- same fixture, same 2026-08-29 gap, this SDK's STREAM_END.</summary>
+    [Fact]
+    public void Stream_end_with_signer_matches_the_reference_byte_for_byte()
+    {
+        var spec = new StreamEndSpec { StreamId = StreamId, Role = StreamRole.Send, Signer = PubBytes };
+        var signed = Envelope.Sign(StreamEndFrame.Build(spec, FrameId, VectorSentAtMs), Identity);
+
+        Assert.Equal(
+            "CC316B0A1C1AD4701AD16D8A140ED62D5DEEFD721C1CEB574CC8755C645CA27413EF9C6A6A9C4768564524C412515C14637A9D6BD4CCB8CD1ADD44F2A240C70C",
+            SigHex(signed));
+        Assert.Equal(280, WireCodec.Encode(signed).Length);
+    }
+
     [Fact]
     public void Stream_error_frame_matches_the_reference_byte_for_byte()
     {
@@ -347,6 +389,19 @@ public class FrameGoldenVectorTests
             "119F379518EC17C603ED5466A57D7AE53198A8AC4D5CA9849934A78994428CB3DAD40BC0EFECE1A0C8EEB0ACC28973C0F7E55DE6444827091814AF0715D9FF0B",
             SigHex(signed));
         Assert.Equal(259, WireCodec.Encode(signed).Length);
+    }
+
+    /// <summary>See Stream_data_with_signer's doc -- same fixture, same 2026-08-29 gap, this SDK's STREAM_ERROR.</summary>
+    [Fact]
+    public void Stream_error_with_signer_matches_the_reference_byte_for_byte()
+    {
+        var spec = new StreamErrorSpec { StreamId = StreamId, Code = "cancelled", Message = "boom", Signer = PubBytes };
+        var signed = Envelope.Sign(StreamErrorFrame.Build(spec, FrameId, VectorSentAtMs), Identity);
+
+        Assert.Equal(
+            "223062E2816C5E6DABCF08A0A4FD01F477F2D1D933F2F1FDC971CAB570003DDE8192CC2F8811CE4A2D180B6781AFA64EB4057947E25CF121F745A9654DC23D0A",
+            SigHex(signed));
+        Assert.Equal(300, WireCodec.Encode(signed).Length);
     }
 
     [Fact]

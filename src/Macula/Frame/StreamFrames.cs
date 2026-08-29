@@ -177,13 +177,31 @@ public static class StreamOpenFrameParsing
     }
 }
 
-/// <summary>Fields for a STREAM_DATA frame -- one chunk.</summary>
+/// <summary>
+/// Fields for a STREAM_DATA frame -- one chunk.
+/// </summary>
+/// <remarks>
+/// <see cref="Signer"/>: null is a valid, reference-supported value
+/// (macula_frame:maybe_add_signer/2 leaves the field out entirely when
+/// absent) -- but every real caller in this SDK
+/// (<see cref="Macula.Streaming.StreamHandle"/>) always supplies the
+/// sending identity's own public key. Found live, 2026-08-29, as the
+/// root cause of a cross-station stream silently losing every DATA
+/// frame after a correctly-routed STREAM_OPEN: non-OPEN stream frames
+/// verify against this field at any relay hop beyond the first;
+/// without it the station falls back to "whichever connection this
+/// frame arrived on", which is only correct for the direct client ->
+/// first-station edge. Ported from macula-rust-sdk's own fix for the
+/// identical gap, confirmed live cross-station (Frankfurt provider,
+/// Milan caller) before this port.
+/// </remarks>
 public sealed class StreamDataSpec
 {
     public required byte[] StreamId { get; init; }
     public required ulong Seq { get; init; }
     public required StreamEncoding Encoding { get; init; }
     public required Value Body { get; init; }
+    public byte[]? Signer { get; init; }
 }
 
 public static class StreamDataFrame
@@ -195,16 +213,19 @@ public static class StreamDataFrame
             .WithField("stream_id", Value.Bytes(spec.StreamId))
             .WithField("seq", Value.UInt(spec.Seq))
             .WithField("encoding", Value.Text(spec.Encoding.Name()))
-            .WithField("body", spec.Body);
+            .WithField("body", spec.Body)
+            .WithOptionalSigner(spec.Signer);
 
     public static Value.MapValue Build(StreamDataSpec spec) =>
         Build(spec, Envelope.FreshFrameId(), Envelope.CurrentMillis());
 }
 
+/// <summary>Signer: see <see cref="StreamDataSpec.Signer"/>'s doc -- same field, same reasoning.</summary>
 public sealed class StreamEndSpec
 {
     public required byte[] StreamId { get; init; }
     public required StreamRole Role { get; init; }
+    public byte[]? Signer { get; init; }
 }
 
 public static class StreamEndFrame
@@ -212,7 +233,8 @@ public static class StreamEndFrame
     public static Value.MapValue Build(StreamEndSpec spec, byte[] frameId, ulong sentAtMs) =>
         Envelope.Base("stream_end", 0, frameId, sentAtMs)
             .WithField("stream_id", Value.Bytes(spec.StreamId))
-            .WithField("role", Value.Text(spec.Role.Name()));
+            .WithField("role", Value.Text(spec.Role.Name()))
+            .WithOptionalSigner(spec.Signer);
 
     public static Value.MapValue Build(StreamEndSpec spec) =>
         Build(spec, Envelope.FreshFrameId(), Envelope.CurrentMillis());
@@ -223,13 +245,15 @@ public static class StreamEndFrame
 /// peer sends instead of just dropping the stream on any non-normal
 /// termination. `code` is a free-form label, NOT a BOLT#4 numeric code
 /// like an ERROR frame's `code` -- streaming aborts and unary-call errors
-/// use unrelated error vocabularies.
+/// use unrelated error vocabularies. Signer: see
+/// <see cref="StreamDataSpec.Signer"/>'s doc -- same field, same reasoning.
 /// </summary>
 public sealed class StreamErrorSpec
 {
     public required byte[] StreamId { get; init; }
     public required string Code { get; init; }
     public required string Message { get; init; }
+    public byte[]? Signer { get; init; }
 }
 
 public static class StreamErrorFrame
@@ -238,10 +262,18 @@ public static class StreamErrorFrame
         Envelope.Base("stream_error", 0, frameId, sentAtMs)
             .WithField("stream_id", Value.Bytes(spec.StreamId))
             .WithField("code", Value.Bytes(Encoding.UTF8.GetBytes(spec.Code)))
-            .WithField("message", Value.Bytes(Encoding.UTF8.GetBytes(spec.Message)));
+            .WithField("message", Value.Bytes(Encoding.UTF8.GetBytes(spec.Message)))
+            .WithOptionalSigner(spec.Signer);
 
     public static Value.MapValue Build(StreamErrorSpec spec) =>
         Build(spec, Envelope.FreshFrameId(), Envelope.CurrentMillis());
+}
+
+/// <summary>Mirrors the reference's maybe_add_signer/2 exactly: append the field when present, leave the map untouched otherwise.</summary>
+internal static class SignerFieldExtensions
+{
+    public static Value.MapValue WithOptionalSigner(this Value.MapValue map, byte[]? signer) =>
+        signer is null ? map : map.WithField("signer", Value.Bytes(signer));
 }
 
 /// <summary>Fields for a STREAM_REPLY frame -- the terminal result of a client_stream/bidi exchange.</summary>

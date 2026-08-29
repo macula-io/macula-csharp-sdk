@@ -130,7 +130,7 @@ public sealed class StreamHandle
     /// </summary>
     public Task SendDataAsync(StreamEncoding encoding, Value body, KeyPair identity, CancellationToken ct = default)
     {
-        var spec = new StreamDataSpec { StreamId = StreamId, Seq = _seqOut, Encoding = encoding, Body = body };
+        var spec = new StreamDataSpec { StreamId = StreamId, Seq = _seqOut, Encoding = encoding, Body = body, Signer = identity.NodeId() };
         _seqOut++;
         return _stream.SendFrameAsync(Envelope.Sign(StreamDataFrame.Build(spec), identity), ct);
     }
@@ -138,7 +138,7 @@ public sealed class StreamHandle
     /// <summary>Half-close: signal this side is done sending. For client_stream/bidi modes, follow with <see cref="AwaitReplyAsync"/>.</summary>
     public Task CloseSendAsync(KeyPair identity, CancellationToken ct = default)
     {
-        var spec = new StreamEndSpec { StreamId = StreamId, Role = StreamRole.Send };
+        var spec = new StreamEndSpec { StreamId = StreamId, Role = StreamRole.Send, Signer = identity.NodeId() };
         return _stream.SendFrameAsync(Envelope.Sign(StreamEndFrame.Build(spec), identity), ct);
     }
 
@@ -228,7 +228,7 @@ public sealed class StreamHandle
     /// </summary>
     public async Task AbortAsync(string code, string message, KeyPair identity, CancellationToken ct = default)
     {
-        var spec = new StreamErrorSpec { StreamId = StreamId, Code = code, Message = message };
+        var spec = new StreamErrorSpec { StreamId = StreamId, Code = code, Message = message, Signer = identity.NodeId() };
         try
         {
             await _stream.SendFrameAsync(Envelope.Sign(StreamErrorFrame.Build(spec), identity), ct).ConfigureAwait(false);
