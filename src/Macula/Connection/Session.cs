@@ -194,13 +194,20 @@ public sealed class Session : IAsyncDisposable
         _control.CallAsync(procedure, realm, payload, deadlineMs, Identity, timeout, ct);
 
     /// <summary>
-    /// Send a signed PUBLISH. Fire-and-forget -- no reply is expected on
-    /// the wire; a subscriber (this session included, if subscribed to the
-    /// same topic/realm) receives an EVENT asynchronously, read via
-    /// <see cref="RecvAsync"/> / <see cref="RecvEventAsync"/>.
+    /// Send a signed PUBLISH, carrying the end-to-end `publisher_sig`
+    /// (over topic/realm/publisher/seq/payload, independent of frame
+    /// type) so the resulting EVENT survives being relayed beyond one
+    /// hop -- a station verifies an EVENT's per-hop `signature` against
+    /// whichever station forwarded it, which only matches on hop 1;
+    /// every hop after that needs `publisher_sig` instead. Matches the
+    /// Erlang reference SDK's own default (`pubsub_emit_publisher_sig`,
+    /// true since macula 4.6.0). Fire-and-forget -- no reply is expected
+    /// on the wire; a subscriber (this session included, if subscribed
+    /// to the same topic/realm) receives an EVENT asynchronously, read
+    /// via <see cref="RecvAsync"/> / <see cref="RecvEventAsync"/>.
     /// </summary>
     public Task PublishAsync(PublishSpec spec, CancellationToken ct = default) =>
-        SendAsync(PublishFrame.Build(spec), ct);
+        SendAsync(Envelope.SignPublisher(PublishFrame.Build(spec), Identity), ct);
 
     public Task SubscribeAsync(SubscribeSpec spec, CancellationToken ct = default) =>
         SendAsync(SubscribeFrame.Build(spec), ct);
@@ -345,6 +352,29 @@ public sealed class Session : IAsyncDisposable
     }
 
     /// <summary>Sends GOODBYE and closes the connection. Idempotent.</summary>
+    /// <remarks>
+    /// UNVERIFIED RISK, flagged 2026-08-29, not yet checked here: the Go
+    /// and Rust ports of this exact method (connect, write, immediately
+    /// close the whole connection) both had a real, confirmed data-loss
+    /// bug -- their underlying QUIC libraries' Write/Close only queue
+    /// data for a background sender and return before it's on the wire,
+    /// so a write sent immediately before a hard connection-close could
+    /// be silently dropped (found live: a PUBLISH that intermittently
+    /// never reached the peer). Both were fixed by finishing the stream
+    /// then giving the background sender a bounded window before
+    /// closing the connection. Whether `System.Net.Quic.QuicStream`'s
+    /// `WriteAsync` gives a stronger completion guarantee than
+    /// quic-go/quinn's is genuinely unknown -- its docs don't say either
+    /// way, and this repo's live tests can't run in this environment
+    /// (`System.Net.Quic` needs libmsquic, unavailable here, and CI
+    /// excludes `Category=Live`) or apparently in CI, so this couldn't
+    /// be checked either. If a future session can run
+    /// `LiveStationTests.Publish_subscribe_round_trip_delivers_our_own_publish_directly`
+    /// -like coverage on a platform with real QUIC support, check
+    /// whether a PUBLISH immediately followed by CloseAsync survives
+    /// reliably before assuming this needs (or doesn't need) the same
+    /// fix.
+    /// </remarks>
     public async ValueTask CloseAsync(string reason = "normal", string? detail = null)
     {
         if (_closed)

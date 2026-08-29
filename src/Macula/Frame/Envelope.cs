@@ -104,4 +104,91 @@ public static class Envelope
         var signable = SignableBytes(frame);
         return KeyPair.Verify(signable, sigField.Value, pubkey) ? null : VerifyError.SignatureInvalid;
     }
+
+    // -----------------------------------------------------------------
+    // publisher_sig: the separate end-to-end signature on PUBLISH/EVENT
+    // frames. Sign/Verify above cover a frame's own per-hop `signature`,
+    // which is checked against whichever connection the frame arrived
+    // on -- correct for the frame's origin (hop 1), but wrong for any
+    // further relay hop, since a relayed frame's signature still
+    // belongs to the ORIGINAL sender, not whichever station forwarded
+    // it. publisher_sig covers just (topic, realm, publisher, seq,
+    // payload), independent of frame type, so it survives PUBLISH ->
+    // EVENT conversion and every relay hop. Ported from the Erlang
+    // reference (macula_frame.erl:sign_publisher/2,
+    // ?EVENT_PUBLISHER_DOMAIN) and checked byte-for-byte against a
+    // signature generated live from that same code.
+    // -----------------------------------------------------------------
+
+    public static readonly byte[] EventPublisherDomain = "macula-v2-event-pub\0"u8.ToArray();
+
+    /// <summary>
+    /// Add `publisher_sig` to a PUBLISH or EVENT frame: <paramref
+    /// name="identity"/>'s Ed25519 signature over (topic, realm,
+    /// publisher, seq, payload). <paramref name="identity"/> must be the
+    /// key pair for the pubkey already in the frame's `publisher` field
+    /// -- not checked here (callers build frames with their own
+    /// identity's pubkey as `publisher` by construction).
+    /// </summary>
+    public static Value.MapValue SignPublisher(Value.MapValue frame, KeyPair identity)
+    {
+        var signable = PublisherSigningBytes(frame);
+        var sig = identity.Sign(signable);
+        return frame.WithField("publisher_sig", Value.Bytes(sig));
+    }
+
+    public enum VerifyPublisherError
+    {
+        MissingPublisherSig,
+        BadPublisherSig,
+        PublisherSigInvalid,
+    }
+
+    /// <summary>
+    /// Verify <paramref name="frame"/>'s `publisher_sig` against its OWN
+    /// `publisher` field -- unlike <see cref="Verify"/> (the per-hop
+    /// signature), there is no separate pubkey parameter: publisher_sig's
+    /// whole point is proving "the pubkey named in this frame produced
+    /// it", independent of which connection it arrived on. Returns null
+    /// on success, the failure reason otherwise.
+    /// </summary>
+    public static VerifyPublisherError? VerifyPublisher(Value.MapValue frame)
+    {
+        if (frame.Get("publisher_sig") is not Value.BytesValue sigField)
+        {
+            return VerifyPublisherError.MissingPublisherSig;
+        }
+        if (sigField.Value.Length != 64)
+        {
+            return VerifyPublisherError.BadPublisherSig;
+        }
+        if (frame.Get("publisher") is not Value.BytesValue pubField || pubField.Value.Length != 32)
+        {
+            return VerifyPublisherError.BadPublisherSig;
+        }
+
+        var signable = PublisherSigningBytes(frame);
+        return KeyPair.Verify(signable, sigField.Value, pubField.Value)
+            ? null
+            : VerifyPublisherError.PublisherSigInvalid;
+    }
+
+    /// <summary>
+    /// The canonical bytes a publisher signs: a fixed 5-field tuple,
+    /// independent of frame type, header fields, `delivered_via`, or
+    /// `ttl_ms`, so the same signature is valid on the PUBLISH the
+    /// publisher sent and on every EVENT a relay derives from it.
+    /// </summary>
+    private static byte[] PublisherSigningBytes(Value.MapValue frame)
+    {
+        string[] fields = ["topic", "realm", "publisher", "seq", "payload"];
+        var pairs = fields
+            .Select(f => new KeyValuePair<Value, Value>(Value.Text(f), frame.Get(f) ?? Value.Null))
+            .ToList();
+        var canonical = CborCodec.Encode((Value.MapValue)Value.Map(pairs));
+        var outBuf = new byte[EventPublisherDomain.Length + canonical.Length];
+        EventPublisherDomain.CopyTo(outBuf, 0);
+        canonical.CopyTo(outBuf, EventPublisherDomain.Length);
+        return outBuf;
+    }
 }

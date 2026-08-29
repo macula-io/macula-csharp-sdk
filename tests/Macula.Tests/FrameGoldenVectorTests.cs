@@ -171,6 +171,79 @@ public class FrameGoldenVectorTests
         Assert.Equal(355, WireCodec.Encode(signed).Length);
     }
 
+    // Reference vector generated directly from the Erlang implementation
+    // (macula-io/macula, src/peering/macula_frame.erl:sign_publisher/2),
+    // live in a rebar3 shell against the same fixed identity every other
+    // vector test here uses. First publisher_sig implementation in any
+    // repo as of 2026-08-29 (macula-go-sdk, macula-rust-sdk,
+    // macula-dotnet-sdk all lacked it) -- no prior port existed to
+    // cross-check against instead, so this is checked straight against
+    // the Erlang source of truth (same vector already proven byte-for-byte
+    // against Go and Rust ports).
+    [Fact]
+    public void PublisherSig_matches_the_erlang_reference()
+    {
+        var spec = new PublishSpec
+        {
+            Topic = "acme/svc.do",
+            Realm = VectorZeroRealm,
+            Publisher = PubBytes,
+            Seq = 42,
+            Payload = Value.Bytes("hello"u8.ToArray()),
+            PublishedAtMs = VectorSentAtMs,
+        };
+        var unsigned = PublishFrame.Build(spec, FrameId, VectorSentAtMs);
+        var withPublisherSig = Envelope.SignPublisher(unsigned, Identity);
+
+        var sig = withPublisherSig.Get("publisher_sig") is Value.BytesValue b
+            ? b.Value
+            : throw new Exception("expected a publisher_sig field");
+        Assert.Equal(
+            "C11BEB676A590FD1BA86F0B77E377B4582AA461DB1283F64E57224E920A7BD0A2C7D36271B795FFC3CB4F2C7BB8925B034431AA6425E25B2AEEFAC026883BB0C",
+            Convert.ToHexStringLower(sig).ToUpperInvariant());
+
+        Assert.Null(Envelope.VerifyPublisher(withPublisherSig));
+
+        // Tamper check: changing payload after signing must invalidate it.
+        var tampered = withPublisherSig.WithField("payload", Value.Bytes("world"u8.ToArray()));
+        Assert.NotNull(Envelope.VerifyPublisher(tampered));
+
+        // Absence must be a verification failure, not "trusted".
+        Assert.Equal(Envelope.VerifyPublisherError.MissingPublisherSig, Envelope.VerifyPublisher(unsigned));
+    }
+
+    // Full encode/decode round trip with BOTH publisher_sig and the
+    // per-hop signature present, mirroring exactly what a real caller
+    // (Session.PublishAsync, once wired) builds.
+    [Fact]
+    public void Publish_frame_with_both_signatures_round_trips()
+    {
+        var identity = KeyPair.Generate();
+        var pubBytes = identity.PublicBytes();
+        var spec = new PublishSpec
+        {
+            Topic = "acme/svc.do",
+            Realm = VectorZeroRealm,
+            Publisher = pubBytes,
+            Seq = 1,
+            Payload = Value.Bytes("hello"u8.ToArray()),
+            PublishedAtMs = VectorSentAtMs,
+        };
+        var unsigned = PublishFrame.Build(spec);
+        var withPublisherSig = Envelope.SignPublisher(unsigned, identity);
+        var fullySigned = Envelope.Sign(withPublisherSig, identity);
+
+        var encoded = WireCodec.Encode(fullySigned);
+        var decodeResult = Assert.IsType<Decoded.Frame>(WireCodec.Decode(encoded));
+        Assert.Equal(encoded.Length, decodeResult.Consumed);
+        var decoded = Assert.IsType<Value.MapValue>(decodeResult.Value);
+
+        Assert.Null(Envelope.Verify(decoded, pubBytes));
+        Assert.Null(Envelope.VerifyPublisher(decoded));
+        Assert.NotNull(decoded.Get("publisher_sig"));
+        Assert.NotNull(decoded.Get("signature"));
+    }
+
     [Fact]
     public void Subscribe_frame_matches_the_reference_byte_for_byte()
     {
