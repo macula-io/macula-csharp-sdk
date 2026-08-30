@@ -194,12 +194,50 @@ public sealed class Session : IAsyncDisposable
     /// time on the control stream, not yet correct for CALL and
     /// PUBLISH/SUBSCRIBE used concurrently on it.
     /// </summary>
-    public Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, CancellationToken ct = default) =>
-        _control.CallAsync(procedure, realm, payload, deadlineMs, Identity, timeout, ct);
+    public async Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, CancellationToken ct = default)
+    {
+        var requestId = RpcFacts.RandomRequestId();
+        await RpcFacts.AnnounceSentAsync(this, realm, Identity, requestId).ConfigureAwait(false);
+        CallResponse? resp = null;
+        Exception? err = null;
+        try
+        {
+            resp = await _control.CallAsync(procedure, realm, payload, deadlineMs, Identity, timeout, ct).ConfigureAwait(false);
+            return resp;
+        }
+        catch (Exception e)
+        {
+            err = e;
+            throw;
+        }
+        finally
+        {
+            await RpcFacts.AnnounceCompletedAsync(this, realm, Identity, requestId, resp, err).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>As <see cref="CallAsync"/>, attaching ucanToken -- for a procedure gated by <see cref="Policy.Required"/> on the provider side.</summary>
-    public Task<CallResponse> CallWithUcanAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, byte[] ucanToken, CancellationToken ct = default) =>
-        _control.CallAsync(procedure, realm, payload, deadlineMs, Identity, timeout, ucanToken, ct);
+    public async Task<CallResponse> CallWithUcanAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, byte[] ucanToken, CancellationToken ct = default)
+    {
+        var requestId = RpcFacts.RandomRequestId();
+        await RpcFacts.AnnounceSentAsync(this, realm, Identity, requestId).ConfigureAwait(false);
+        CallResponse? resp = null;
+        Exception? err = null;
+        try
+        {
+            resp = await _control.CallAsync(procedure, realm, payload, deadlineMs, Identity, timeout, ucanToken, ct).ConfigureAwait(false);
+            return resp;
+        }
+        catch (Exception e)
+        {
+            err = e;
+            throw;
+        }
+        finally
+        {
+            await RpcFacts.AnnounceCompletedAsync(this, realm, Identity, requestId, resp, err).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>
     /// Send a signed PUBLISH, carrying the end-to-end `publisher_sig`
@@ -320,7 +358,7 @@ public sealed class Session : IAsyncDisposable
                 continue; // not ours -- see this method's doc on the limitation
             }
 
-            var reply = await BuildCallReplyAsync(callInfo, lookup, policy, Identity.NodeId()).ConfigureAwait(false);
+            var reply = await BuildCallReplyAsync(this, callInfo, lookup, policy, Identity).ConfigureAwait(false);
             await SendAsync(reply, ct).ConfigureAwait(false);
             return;
         }
@@ -334,10 +372,16 @@ public sealed class Session : IAsyncDisposable
     /// <see cref="CallHandlerException"/> produces unknown_error with its
     /// message as `detail`; any OTHER thrown exception (an unexpected
     /// crash) produces temporary_relay_failure with no detail, matching
-    /// the reference not sending one on a crash either.
+    /// the reference not sending one on a crash either. Fires
+    /// rpc.received_v1/rpc.replied_v1 around dispatch, matching
+    /// macula_response.erl exactly: RECEIVED only after policy and lookup
+    /// both pass, REPLIED for the success/handler-error outcomes but NOT
+    /// for a handler crash -- the reference's own crash-before-publish
+    /// omission, matched not "improved."
     /// </summary>
-    private static async Task<Value.MapValue> BuildCallReplyAsync(CallInfo callInfo, CallLookup lookup, PolicyLookup policy, byte[] selfPub)
+    private static async Task<Value.MapValue> BuildCallReplyAsync(Session? session, CallInfo callInfo, CallLookup lookup, PolicyLookup policy, KeyPair identity)
     {
+        var selfPub = identity.NodeId();
         try
         {
             policy(callInfo.Realm, callInfo.Procedure).Check(callInfo.UcanToken);
@@ -353,17 +397,24 @@ public sealed class Session : IAsyncDisposable
             return CallErrorFrame.Build(new CallErrorSpec { CallId = callInfo.CallId, Code = Bolt4Code.UnknownNextPeer, ReportedBy = selfPub });
         }
 
+        var requestId = RpcFacts.RandomRequestId();
+        await RpcFacts.AnnounceReceivedAsync(session, callInfo.Realm, identity, requestId).ConfigureAwait(false);
+
         try
         {
             var value = await handler(callInfo.Payload).ConfigureAwait(false);
+            await RpcFacts.AnnounceRepliedAsync(session, callInfo.Realm, identity, requestId, null).ConfigureAwait(false);
             return ResultFrame.Build(new ResultSpec { CallId = callInfo.CallId, Payload = value, RespondedBy = selfPub });
         }
         catch (CallHandlerException e)
         {
+            await RpcFacts.AnnounceRepliedAsync(session, callInfo.Realm, identity, requestId, e.Message).ConfigureAwait(false);
             return CallErrorFrame.Build(new CallErrorSpec { CallId = callInfo.CallId, Code = Bolt4Code.UnknownError, ReportedBy = selfPub, Detail = e.Message });
         }
         catch (Exception)
         {
+            // A crash: NOT announced, matching the reference exactly (see
+            // this method's doc).
             return CallErrorFrame.Build(new CallErrorSpec { CallId = callInfo.CallId, Code = Bolt4Code.TemporaryRelayFailure, ReportedBy = selfPub });
         }
     }
