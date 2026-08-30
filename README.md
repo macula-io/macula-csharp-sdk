@@ -1,6 +1,6 @@
-# macula-dotnet-sdk
+# macula-dotnet
 
-[![CI](https://img.shields.io/github/actions/workflow/status/macula-io/macula-dotnet-sdk/ci.yml?branch=main&label=CI)](https://github.com/macula-io/macula-dotnet-sdk/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/macula-io/macula-dotnet/ci.yml?branch=main&label=CI)](https://github.com/macula-io/macula-dotnet/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
 [![.NET](https://img.shields.io/badge/.NET-10.0%2B-512BD4?logo=dotnet)](https://dotnet.microsoft.com)
 [![no FFI](https://img.shields.io/badge/FFI-none-success.svg)](#why-native-not-a-binding)

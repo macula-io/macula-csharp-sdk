@@ -96,7 +96,7 @@ public class LiveStationTests
         var identity = KeyPair.GenerateWithDefaultPuzzle();
         await using var session = await Session.ConnectAsync(StationHost, StationPort, identity, Connection.Trust.UseWebPki);
 
-        var data = "hello from macula-dotnet-sdk, single block"u8.ToArray();
+        var data = "hello from macula-dotnet, single block"u8.ToArray();
         var mcid = await ContentTransfer.PutAsync(session, data, "greeting.txt", identity);
         Assert.False(Mcid.IsChunked(mcid));
 

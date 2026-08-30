@@ -176,7 +176,7 @@ public class FrameGoldenVectorTests
     // live in a rebar3 shell against the same fixed identity every other
     // vector test here uses. First publisher_sig implementation in any
     // repo as of 2026-08-29 (macula-go-sdk, macula-rust-sdk,
-    // macula-dotnet-sdk all lacked it) -- no prior port existed to
+    // macula-dotnet all lacked it) -- no prior port existed to
     // cross-check against instead, so this is checked straight against
     // the Erlang source of truth (same vector already proven byte-for-byte
     // against Go and Rust ports).

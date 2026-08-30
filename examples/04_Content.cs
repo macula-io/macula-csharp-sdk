@@ -13,7 +13,7 @@ public static class Content
         await using var session = await Session.ConnectAsync(Station.Host, Station.Port, identity, Trust.UseWebPki);
 
         // Single block: fits in one chunk, addressed purely by content hash.
-        var small = "hello from macula-dotnet-sdk"u8.ToArray();
+        var small = "hello from macula-dotnet"u8.ToArray();
         var smallMcid = await ContentTransfer.PutAsync(session, small, "greeting.txt", identity);
         Console.WriteLine($"put single block, mcid={Convert.ToHexStringLower(smallMcid)} (chunked={Mcid.IsChunked(smallMcid)})");
 

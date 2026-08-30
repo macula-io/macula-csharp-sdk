@@ -30,7 +30,7 @@ let run () =
                 deadlineMs,
                 identity)
 
-        do! handle.SendDataAsync(StreamEncoding.Raw, Value.Bytes(Text.Encoding.UTF8.GetBytes "hello from macula-dotnet-sdk (F#)"), identity)
+        do! handle.SendDataAsync(StreamEncoding.Raw, Value.Bytes(Text.Encoding.UTF8.GetBytes "hello from macula-dotnet (F#)"), identity)
         do! handle.CloseSendAsync identity
         printfn "sent one chunk and half-closed"
 
