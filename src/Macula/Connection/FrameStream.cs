@@ -55,7 +55,11 @@ public sealed class FrameStream
     /// doesn't apply here, since a dedicated stream carries only this one
     /// exchange's frames.
     /// </summary>
-    public async Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, KeyPair identity, TimeSpan timeout, CancellationToken ct = default)
+    public Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, KeyPair identity, TimeSpan timeout, CancellationToken ct = default) =>
+        CallAsync(procedure, realm, payload, deadlineMs, identity, timeout, Array.Empty<byte>(), ct);
+
+    /// <summary>As <see cref="CallAsync(string, byte[], Value, long, KeyPair, TimeSpan, CancellationToken)"/>, attaching ucanToken to the outgoing CALL's ucan_token field -- for a procedure gated by <c>Macula.Ucan.Policy.Required</c> on the provider side.</summary>
+    public async Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, KeyPair identity, TimeSpan timeout, byte[] ucanToken, CancellationToken ct = default)
     {
         var callId = new byte[16];
         Random.Shared.NextBytes(callId);
@@ -67,6 +71,7 @@ public sealed class FrameStream
             Payload = payload,
             DeadlineMs = deadlineMs,
             Caller = identity.NodeId(),
+            UcanToken = ucanToken,
         };
         var signed = Envelope.Sign(CallFrame.Build(spec), identity);
         await SendFrameAsync(signed, ct).ConfigureAwait(false);

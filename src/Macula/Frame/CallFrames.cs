@@ -99,7 +99,7 @@ public static class CallErrorFrame
 }
 
 /// <summary>The fields a provider needs from an inbound CALL.</summary>
-public sealed record CallInfo(byte[] CallId, string Procedure, byte[] Realm, Value Payload, long DeadlineMs, byte[] Caller);
+public sealed record CallInfo(byte[] CallId, string Procedure, byte[] Realm, Value Payload, long DeadlineMs, byte[] Caller, byte[] UcanToken);
 
 public enum ParseFrameError
 {
@@ -180,8 +180,13 @@ public static class CallFrameParsing
             _ => throw new ParseFrameException(ParseFrameError.WrongFieldType, "deadline_ms"),
         };
         var caller = RequireBytes(map, "caller", 32);
+        // Absent on a wire-level CALL from a peer that predates this field,
+        // or simply an ungated call from a caller who never attached one --
+        // both are the empty-token case a Policy check treats as "no token
+        // presented", not a parse error.
+        var ucanToken = map.Get("ucan_token") is { } t && !t.IsNull ? t.AsBytes() : Array.Empty<byte>();
 
-        return new CallInfo(callId, procedure, realm, payload, deadlineMs, caller);
+        return new CallInfo(callId, procedure, realm, payload, deadlineMs, caller, ucanToken);
     }
 
     /// <summary>Extract this frame's call_id, regardless of frame type -- 16 bytes, never 32.</summary>

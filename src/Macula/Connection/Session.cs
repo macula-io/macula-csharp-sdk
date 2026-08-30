@@ -5,6 +5,7 @@ using System.Runtime.Versioning;
 using Macula.Bolt4;
 using Macula.Frame;
 using Macula.Identity;
+using Macula.Ucan;
 
 namespace Macula.Connection;
 
@@ -13,6 +14,9 @@ public delegate Task<Value> CallHandler(Value payload);
 
 /// <summary>Resolves an inbound CALL's (realm, procedure) to a handler, or null if nothing is advertised for it.</summary>
 public delegate CallHandler? CallLookup(byte[] realm, string procedure);
+
+/// <summary>Resolves an inbound CALL's (realm, procedure) to the <see cref="Policy"/> gating it, consulted BEFORE lookup -- see <see cref="Session.ServeOneCallGatedAsync"/>. Defaults to <see cref="Policy.Open"/> for any (realm, procedure) an implementation doesn't explicitly gate.</summary>
+public delegate Policy PolicyLookup(byte[] realm, string procedure);
 
 /// <summary>Thrown by a <see cref="CallHandler"/> to produce an explicit `unknown_error` reply with this message as `detail`, distinct from an unexpected crash (temporary_relay_failure, no detail).</summary>
 public sealed class CallHandlerException : Exception
@@ -193,6 +197,10 @@ public sealed class Session : IAsyncDisposable
     public Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, CancellationToken ct = default) =>
         _control.CallAsync(procedure, realm, payload, deadlineMs, Identity, timeout, ct);
 
+    /// <summary>As <see cref="CallAsync"/>, attaching ucanToken -- for a procedure gated by <see cref="Policy.Required"/> on the provider side.</summary>
+    public Task<CallResponse> CallWithUcanAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, byte[] ucanToken, CancellationToken ct = default) =>
+        _control.CallAsync(procedure, realm, payload, deadlineMs, Identity, timeout, ucanToken, ct);
+
     /// <summary>
     /// Send a signed PUBLISH, carrying the end-to-end `publisher_sig`
     /// (over topic/realm/publisher/seq/payload, independent of frame
@@ -266,13 +274,28 @@ public sealed class Session : IAsyncDisposable
     /// needs to serve CALLs and also act as a caller/subscriber concurrently
     /// should use a second <see cref="Session"/>.
     /// </summary>
-    public async Task ServeOneCallAsync(CallLookup lookup, TimeSpan timeout, CancellationToken ct = default)
+    public Task ServeOneCallAsync(CallLookup lookup, TimeSpan timeout, CancellationToken ct = default) =>
+        ServeOneCallGatedAsync(lookup, OpenPolicy, timeout, ct);
+
+    /// <summary>
+    /// As <see cref="ServeOneCallAsync"/>, additionally gating each inbound
+    /// CALL through policy BEFORE lookup runs -- mirrors
+    /// `macula_station_link.erl`'s `handle_inbound_call/2` exactly: an open
+    /// policy (the default, <see cref="Policy.Open"/>) behaves identically
+    /// to plain <see cref="ServeOneCallAsync"/>; a <see cref="Policy.Required"/>
+    /// policy demands a CALL's UcanToken verify against the required
+    /// issuer, and refuses with BOLT#4 Unauthorized WITHOUT ever invoking
+    /// lookup or a handler if it doesn't -- a CallHandler never sees the
+    /// raw token either way, matching the reference's own handler contract
+    /// (payload only).
+    /// </summary>
+    public async Task ServeOneCallGatedAsync(CallLookup lookup, PolicyLookup policy, TimeSpan timeout, CancellationToken ct = default)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
         try
         {
-            await ServeOneCallInnerAsync(lookup, timeoutCts.Token).ConfigureAwait(false);
+            await ServeOneCallInnerAsync(lookup, policy, timeoutCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -280,7 +303,9 @@ public sealed class Session : IAsyncDisposable
         }
     }
 
-    private async Task ServeOneCallInnerAsync(CallLookup lookup, CancellationToken ct)
+    private static Policy OpenPolicy(byte[] realm, string procedure) => Policy.Open;
+
+    private async Task ServeOneCallInnerAsync(CallLookup lookup, PolicyLookup policy, CancellationToken ct)
     {
         while (true)
         {
@@ -295,7 +320,7 @@ public sealed class Session : IAsyncDisposable
                 continue; // not ours -- see this method's doc on the limitation
             }
 
-            var reply = await BuildCallReplyAsync(callInfo, lookup, Identity.NodeId()).ConfigureAwait(false);
+            var reply = await BuildCallReplyAsync(callInfo, lookup, policy, Identity.NodeId()).ConfigureAwait(false);
             await SendAsync(reply, ct).ConfigureAwait(false);
             return;
         }
@@ -303,15 +328,25 @@ public sealed class Session : IAsyncDisposable
 
     /// <summary>
     /// Mirrors `macula_station_link.erl`'s `handle_inbound_call/2` +
-    /// `safe_invoke_handler/4`: a lookup miss is unknown_next_peer; the
-    /// handler running to completion produces a RESULT, or a thrown
+    /// `safe_invoke_handler/4`: a policy rejection is Unauthorized, before
+    /// lookup ever runs; a lookup miss is unknown_next_peer; the handler
+    /// running to completion produces a RESULT, or a thrown
     /// <see cref="CallHandlerException"/> produces unknown_error with its
     /// message as `detail`; any OTHER thrown exception (an unexpected
     /// crash) produces temporary_relay_failure with no detail, matching
     /// the reference not sending one on a crash either.
     /// </summary>
-    private static async Task<Value.MapValue> BuildCallReplyAsync(CallInfo callInfo, CallLookup lookup, byte[] selfPub)
+    private static async Task<Value.MapValue> BuildCallReplyAsync(CallInfo callInfo, CallLookup lookup, PolicyLookup policy, byte[] selfPub)
     {
+        try
+        {
+            policy(callInfo.Realm, callInfo.Procedure).Check(callInfo.UcanToken);
+        }
+        catch (Exception)
+        {
+            return CallErrorFrame.Build(new CallErrorSpec { CallId = callInfo.CallId, Code = Bolt4Code.Unauthorized, ReportedBy = selfPub });
+        }
+
         var handler = lookup(callInfo.Realm, callInfo.Procedure);
         if (handler is null)
         {
