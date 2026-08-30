@@ -10,7 +10,7 @@ namespace Macula.Dht;
 /// direct-dial resolution needs: procedure_advertisement, station_endpoint,
 /// and content_announcement construction, signing, verification, and
 /// storage-key derivation. Ported from macula-io/macula's
-/// src/record/macula_record.erl via macula-go-sdk's own dht/record.go (the
+/// src/record/macula_record.erl via macula-go's own dht/record.go (the
 /// exact same algorithm, byte-for-byte -- this is not a fresh derivation).
 /// </summary>
 public static class RecordTypes

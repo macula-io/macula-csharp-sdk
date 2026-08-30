@@ -14,7 +14,7 @@ namespace Macula.Dht;
 /// station_endpoint, then dialing that station in one hop -- instead of
 /// depending on ordinary advertise-gossip having propagated a route between
 /// whichever two stations happen to be involved. Ported from
-/// macula-io/macula's macula_direct_dial.erl via macula-go-sdk's own
+/// macula-io/macula's macula_direct_dial.erl via macula-go's own
 /// directdial/directdial.go.
 ///
 /// Trust model: every candidate procedure_advertisement must carry a valid

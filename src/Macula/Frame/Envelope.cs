@@ -7,7 +7,7 @@ namespace Macula.Frame;
 /// The macula application-frame envelope: construction, Ed25519
 /// signing/verification. Ported from
 /// <c>src/peering/macula_frame.erl</c> (macula-io/macula) via
-/// macula-rust-sdk's own <c>src/frame.rs</c>.
+/// macula-rust's own <c>src/frame.rs</c>.
 ///
 /// Every frame carries a common envelope -- version, frame_type, frame_id
 /// (UUIDv7), sent_at_ms, capabilities, plus realm/call_id/source_route set

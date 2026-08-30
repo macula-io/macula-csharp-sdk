@@ -6,7 +6,7 @@ using Macula.Identity;
 namespace Macula.Tests;
 
 /// <summary>
-/// Every test here builds the EXACT SAME frame macula-rust-sdk's own
+/// Every test here builds the EXACT SAME frame macula-rust's own
 /// differential-vector tests build (same identity, same fixed
 /// frame_id/sent_at_ms/call_id/stream_id, same field values) and asserts
 /// the resulting Ed25519 signature matches byte-for-byte -- and those
@@ -18,7 +18,7 @@ namespace Macula.Tests;
 /// station's own Erlang implementation, without touching the network.
 ///
 /// Every hex constant below was extracted programmatically from
-/// macula-rust-sdk's src/frame.rs (regex over the source), not
+/// macula-rust's src/frame.rs (regex over the source), not
 /// hand-transcribed.
 /// </summary>
 public class FrameGoldenVectorTests
@@ -175,7 +175,7 @@ public class FrameGoldenVectorTests
     // (macula-io/macula, src/peering/macula_frame.erl:sign_publisher/2),
     // live in a rebar3 shell against the same fixed identity every other
     // vector test here uses. First publisher_sig implementation in any
-    // repo as of 2026-08-29 (macula-go-sdk, macula-rust-sdk,
+    // repo as of 2026-08-29 (macula-go, macula-rust,
     // macula-dotnet all lacked it) -- no prior port existed to
     // cross-check against instead, so this is checked straight against
     // the Erlang source of truth (same vector already proven byte-for-byte
@@ -374,7 +374,7 @@ public class FrameGoldenVectorTests
     /// `macula_frame:stream_data/1` with `signer => Pub` in the spec map
     /// (`rebar3 shell`, same identity/frame_id/stream_id/sent_at_ms
     /// fixture as every vector in this file) -- not guessed from the
-    /// field's shape. Ported verbatim from macula-rust-sdk's own vector
+    /// field's shape. Ported verbatim from macula-rust's own vector
     /// of the same name, same fixture, same signature.
     /// </summary>
     [Fact]

@@ -11,7 +11,7 @@ using Org.BouncyCastle.X509;
 namespace Macula.Tests;
 
 /// <summary>
-/// Mirrors macula-go-sdk's own dht/cert_chain_test.go fixtures and cases
+/// Mirrors macula-go's own dht/cert_chain_test.go fixtures and cases
 /// exactly (valid, absent, bad signature, key mismatch, org mismatch,
 /// expired, wrong CA, undecodable) -- same algorithm, same five failure
 /// modes, ported test-for-test.

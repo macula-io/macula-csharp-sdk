@@ -32,7 +32,7 @@
 > pair**, **periodic re-advertise**, and **RPC telemetry auto-facts** —
 > all live-verified the same way. The frame layer is cross-checked
 > byte-for-byte — including the Ed25519 signature itself — against
-> [`macula-rust-sdk`](https://github.com/macula-io/macula-rust-sdk)'s own
+> [`macula-rust`](https://github.com/macula-io/macula-rust)'s own
 > fixed reference vectors: 15 golden frames, all matching. See
 > [Status](#status) for the full picture.
 
@@ -41,8 +41,8 @@
 A native .NET implementation, written in C#, of the client half of Macula's wire protocol —
 the same protocol [`macula-io/macula`](https://github.com/macula-io/macula)
 (the Erlang/OTP SDK) speaks, and the same protocol
-[`macula-go-sdk`](https://github.com/macula-io/macula-go-sdk) and
-[`macula-rust-sdk`](https://github.com/macula-io/macula-rust-sdk) already
+[`macula-go`](https://github.com/macula-io/macula-go) and
+[`macula-rust`](https://github.com/macula-io/macula-rust) already
 port. Macula is a federated mesh for sovereign, end-to-end-encrypted
 application networks; a **station** is the relay/DHT node, and this
 library is what a **leaf** — anything that isn't itself a station — uses
@@ -50,7 +50,7 @@ to join it.
 
 ## Why native, not a binding
 
-Unlike [`macula-php-sdk`](https://github.com/macula-io/macula-php-sdk)
+Unlike [`macula-php`](https://github.com/macula-io/macula-php)
 (a thin FFI binding over the Go SDK's compiled C ABI, the right call for
 PHP), this is a full independent port: its own deterministic CBOR codec,
 its own Ed25519/S/Kademlia identity layer, its own frame construction —
@@ -79,7 +79,7 @@ Four independent implementations (Erlang reference, Rust, Go, now C#)
 producing bit-identical wire bytes for the same input is a much stronger
 correctness claim than any one of them alone. This repo's own
 `FrameGoldenVectorTests` builds the exact same 15 signed frames
-`macula-rust-sdk`'s own differential-vector tests build — same identity,
+`macula-rust`'s own differential-vector tests build — same identity,
 same fixed `frame_id`/`sent_at_ms`/`call_id`/`stream_id` — and asserts
 the Ed25519 signature, not just the frame shape, matches byte for byte
 against vectors originally captured from a real `rebar3 shell` against
@@ -167,7 +167,7 @@ with matching numbers and behavior — same station calls, same output shape.
 
 Examples 06, 07, and 09 run more than one role in **one process, multiple
 `Session`s** — there's no cgo/fork hazard here the way there was in
-[`macula-php-sdk`](https://github.com/macula-io/macula-php-sdk)'s
+[`macula-php`](https://github.com/macula-io/macula-php)'s
 FFI-over-Go binding, so a provider and a caller can just be concurrent
 tasks in the same async function.
 
@@ -287,7 +287,7 @@ Not built, matching every sibling SDK's own documented v1 scope: real DHT
 peer participation (Kademlia routing tables, replication) — this library
 only ever asks whichever station it's already connected to look something
 up in or publish to the DHT via ordinary RPC (`_dht.put_record`/
-`_dht.find_record`), the same way `macula-go-sdk`/`macula-rust-sdk` do.
+`_dht.find_record`), the same way `macula-go`/`macula-rust` do.
 HyParView/Plumtree gossip primitives are station-to-station overlay
 concerns, explicitly out of scope for a leaf client by design, not an
 unfinished gap.
@@ -332,8 +332,8 @@ a public-domain dedication, no attribution legally required, credited
 here anyway as a matter of course. Used here (as part of
 `assets/macula-dotnet-full-{dark,light}.svg`) purely to identify the
 platform this SDK targets, the same way the sibling
-[macula-go-sdk](https://github.com/macula-io/macula-go-sdk) and
-[macula-rust-sdk](https://github.com/macula-io/macula-rust-sdk) badges
+[macula-go](https://github.com/macula-io/macula-go) and
+[macula-rust](https://github.com/macula-io/macula-rust) badges
 use the Go gopher and Rust gear marks, and
-[macula-php-sdk](https://github.com/macula-io/macula-php-sdk) uses the
+[macula-php](https://github.com/macula-io/macula-php) uses the
 official PHP logo — not an endorsement by Microsoft.

@@ -191,7 +191,7 @@ public static class StreamOpenFrameParsing
 /// verify against this field at any relay hop beyond the first;
 /// without it the station falls back to "whichever connection this
 /// frame arrived on", which is only correct for the direct client ->
-/// first-station edge. Ported from macula-rust-sdk's own fix for the
+/// first-station edge. Ported from macula-rust's own fix for the
 /// identical gap, confirmed live cross-station (Frankfurt provider,
 /// Milan caller) before this port.
 /// </remarks>

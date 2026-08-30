@@ -20,7 +20,7 @@ namespace Macula.Ucan;
 /// hand-rolled on BCL crypto + System.Text.Json, matching the reference
 /// exactly rather than adopting an incompatible library.
 ///
-/// A token minted here verifies against macula-go-sdk, macula-rust-sdk, or
+/// A token minted here verifies against macula-go, macula-rust, or
 /// the Erlang macula SDK, or vice versa -- same header shape, same payload
 /// field names (iss/aud/exp/nbf/nnc/cap/fct/prf), same signing input
 /// (header_b64 + "." + payload_b64), same signature algorithm. Field ORDER

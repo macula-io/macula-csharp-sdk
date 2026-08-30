@@ -20,7 +20,7 @@ public sealed record PublishOutcome(Exception? Error, bool Cancelled);
 /// CancellationToken plays the role a pid's supervision plays in Erlang,
 /// the same idiom this SDK's own <see cref="Dht.DirectDial.KeepAdvertisedDirectAsync"/>
 /// already established for a comparable long-lived background loop.
-/// Ported from macula-go-sdk's connection/publisher.go + subscriber.go.
+/// Ported from macula-go's connection/publisher.go + subscriber.go.
 /// </summary>
 [SupportedOSPlatform("linux")]
 [SupportedOSPlatform("macos")]
@@ -110,7 +110,7 @@ public static class SupervisedPubSub
     /// non-"call" frame -- it is NOT treated as fatal the way
     /// RecvEventAsync's own contract treats any parse failure. Without
     /// this, a single non-EVENT frame arriving on the control stream would
-    /// abort the whole subscriber loop (the exact bug macula-go-sdk's own
+    /// abort the whole subscriber loop (the exact bug macula-go's own
     /// first draft of RunSubscriber hit and had to fix -- avoided here
     /// from the start).
     /// </summary>
@@ -163,7 +163,7 @@ public static class SupervisedPubSub
     // A no-op if session is null -- real callers always pass a live
     // Session; only network-free unit tests exercising pure dispatch logic
     // would pass null, matching the same nil-session-safe design
-    // macula-go-sdk's own announceFact uses.
+    // macula-go's own announceFact uses.
     private static async Task AnnounceFact(Session? session, bool announce, byte[] realm, KeyPair identity, string topic, Value payload)
     {
         if (!announce || session is null)

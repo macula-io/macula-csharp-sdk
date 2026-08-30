@@ -3,7 +3,7 @@ using Macula.Identity;
 namespace Macula.Tests;
 
 /// <summary>
-/// Reuses the exact same reference vectors as macula-rust-sdk's
+/// Reuses the exact same reference vectors as macula-rust's
 /// identity.rs, captured directly from a real, random
 /// `crypto:generate_key(eddsa, ed25519)` / `crypto:sign/4` /
 /// `crypto:hash(sha256, Pub)` in macula-io/macula's own `rebar3 shell` --
@@ -13,7 +13,7 @@ namespace Macula.Tests;
 /// </summary>
 public class KeyPairTests
 {
-    // Extracted programmatically from macula-rust-sdk's src/identity.rs
+    // Extracted programmatically from macula-rust's src/identity.rs
     // (not hand-transcribed) -- captured directly from a real
     // crypto:generate_key/crypto:sign/crypto:hash(sha256) in macula-io/macula's
     // own rebar3 shell. See that module's doc comment for provenance.

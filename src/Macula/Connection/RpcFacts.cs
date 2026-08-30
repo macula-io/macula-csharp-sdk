@@ -17,7 +17,7 @@ namespace Macula.Connection;
 /// `Announce` is a config field in both Erlang modules, but every reachable
 /// public entry point hardcodes it to true -- there is no way to turn it
 /// off in practice on the reference side, so this doesn't expose an option
-/// nothing would ever set to false either. Ported from macula-go-sdk's
+/// nothing would ever set to false either. Ported from macula-go's
 /// connection/rpc_facts.go.
 /// </summary>
 internal static class RpcFacts

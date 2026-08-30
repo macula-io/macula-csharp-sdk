@@ -13,7 +13,7 @@ namespace Macula.Dht;
 /// authority -- the trust material already travels with the advertisement.
 ///
 /// Ported from macula_record.erl's verify_advertisement_cert_chain/3 via
-/// macula-go-sdk's own dht/cert_chain.go -- same algorithm, same five
+/// macula-go's own dht/cert_chain.go -- same algorithm, same five
 /// failure modes, using X509Chain's native path validation instead of
 /// hand-rolling ASN.1 walking. Opt-in: this has no effect on plain
 /// (non-cert-chain) direct-dial, which remains exactly as it was.

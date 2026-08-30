@@ -4,7 +4,7 @@ using Macula.Content;
 namespace Macula.Tests;
 
 /// <summary>
-/// Reuses macula-rust-sdk's own reference vectors for manifest.rs,
+/// Reuses macula-rust's own reference vectors for manifest.rs,
 /// captured from a real `macula_manifest:create/2` via `rebar3 shell`
 /// against macula-io/macula -- root hash, MCID, and the full byte-for-byte
 /// `to_wire` encoding.

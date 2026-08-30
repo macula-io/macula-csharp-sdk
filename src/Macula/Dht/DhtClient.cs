@@ -9,7 +9,7 @@ namespace Macula.Dht;
 /// reimplementation of Kademlia/DHT peer logic, which stays relay-only
 /// (macula-station). A leaf identity just asks whatever station it's
 /// already connected to look something up in, or write something to, the
-/// DHT the stations maintain among themselves. Mirrors macula-go-sdk's
+/// DHT the stations maintain among themselves. Mirrors macula-go's
 /// dht/client.go exactly.
 /// </summary>
 [SupportedOSPlatform("linux")]

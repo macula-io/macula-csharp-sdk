@@ -6,12 +6,12 @@ namespace Macula.Tests;
 public class UcanTests
 {
     /// <summary>
-    /// A real UCAN token minted by macula-go-sdk's own ucan.Create,
+    /// A real UCAN token minted by macula-go's own ucan.Create,
     /// captured from a real `go run` against a fixed 32-byte seed (bytes
     /// 0x00..0x1F) -- not hand-constructed. Verifying this here proves
     /// actual cross-language wire compatibility (same header shape, same
     /// signing input, same signature algorithm), not just a doc-comment
-    /// claim, matching the same discipline macula-rust-sdk's own UCAN port
+    /// claim, matching the same discipline macula-rust's own UCAN port
     /// used this session.
     /// </summary>
     private const string CrossLangPubkeyHex = "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8";

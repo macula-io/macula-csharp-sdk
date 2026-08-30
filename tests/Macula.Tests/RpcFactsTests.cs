@@ -14,7 +14,7 @@ namespace Macula.Tests;
 /// dodge collisions with real third-party traffic by randomizing the topic
 /// string, a watcher here must correlate by request_id (draining a batch
 /// per topic and finding a match) rather than trusting first-arrival,
-/// matching the exact lesson macula-go-sdk's own equivalent test had to
+/// matching the exact lesson macula-go's own equivalent test had to
 /// learn live. Same fleet-flakiness caveat as <see cref="LiveStationTests"/>.
 ///
 /// Passes reliably alone or under `dotnet test -- xUnit.MaxParallelThreads=1`

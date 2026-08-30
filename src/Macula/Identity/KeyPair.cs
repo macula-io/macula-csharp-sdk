@@ -10,7 +10,7 @@ namespace Macula.Identity;
 /// <c>macula_identity.erl</c> (macula-io/macula) and the sibling Rust SDK's
 /// <c>identity.rs</c> byte-for-byte; this module's test vectors are the
 /// exact same ones captured from a real <c>rebar3 shell</c> that
-/// macula-rust-sdk uses, not independently derived.
+/// macula-rust uses, not independently derived.
 /// </summary>
 public sealed class KeyPair
 {
