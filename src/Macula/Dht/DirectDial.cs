@@ -132,6 +132,98 @@ public static class DirectDial
     }
 
     /// <summary>
+    /// ResolveAsync plus Slice 7c Direction B managed-realm authorization:
+    /// only an advertisement whose embedded cert chain validates to
+    /// realmCaPem and names expectedOrg is trusted. Opt-in -- ResolveAsync
+    /// itself is unaffected and remains the right choice for unmanaged
+    /// realms.
+    /// </summary>
+    public static async Task<Resolved> ResolveWithCertChainAsync(Session resolveVia, byte[] realm, string procedure, byte[] realmCaPem, string expectedOrg, CancellationToken ct = default)
+    {
+        var uri = RecordFactory.DiscoveryUri(realm, procedure);
+        var key = RecordFactory.ProcedureKey(uri);
+
+        var recs = await FindWithRetryAsync(resolveVia, key, ct).ConfigureAwait(false);
+        if (recs.Count == 0)
+        {
+            throw new ProcedureNotAdvertisedException();
+        }
+
+        var (adv, lastError) = FirstAuthorizedAdvertisement(recs, realmCaPem, expectedOrg);
+        if (adv is null)
+        {
+            if (lastError is not null)
+            {
+                throw new NoAuthorizedAdvertisementException(lastError);
+            }
+            throw new NoTrustedAdvertisementException();
+        }
+        return await ResolveStationEndpointAsync(resolveVia, adv.ServingStation, ct).ConfigureAwait(false);
+    }
+
+    // FirstTrustedAdvertisement plus the cert-chain check. lastError is the
+    // most recent CertChain.VerifyAdvertisementCertChain failure seen (null
+    // if every candidate failed the plain signature check instead, in
+    // which case the caller should report NoTrustedAdvertisementException,
+    // matching ResolveAsync's own distinction).
+    private static (ProcedureAdvertisement? Advertisement, Exception? LastError) FirstAuthorizedAdvertisement(IReadOnlyList<Record> recs, byte[] realmCaPem, string expectedOrg)
+    {
+        Exception? lastError = null;
+        foreach (var rec in recs)
+        {
+            try
+            {
+                CertChain.VerifyAdvertisementCertChain(realmCaPem, rec, expectedOrg);
+            }
+            catch (CertChain.CertChainBadSignatureException)
+            {
+                continue;
+            }
+            catch (Exception e)
+            {
+                lastError = e;
+                continue;
+            }
+            try
+            {
+                return (RecordReading.ReadProcedureAdvertisement(rec), null);
+            }
+            catch (Exception e)
+            {
+                lastError = e;
+            }
+        }
+        return (null, lastError);
+    }
+
+    /// <summary>CallAsync, resolved via ResolveWithCertChainAsync instead of ResolveAsync -- see both for the full contract. Opt-in managed-realm authorization; CallAsync itself is unaffected.</summary>
+    public static async Task<CallResponse> CallWithCertChainAsync(Session resolveVia, KeyPair identity, byte[] realm, string procedure, byte[] realmCaPem, string expectedOrg, Value payload, TimeSpan timeout, CancellationToken ct = default)
+    {
+        var resolved = await ResolveWithCertChainAsync(resolveVia, realm, procedure, realmCaPem, expectedOrg, ct).ConfigureAwait(false);
+        var target = await DialAndVerifyAsync(resolved.Host, resolved.Port, resolved.Station, identity, timeout, ct).ConfigureAwait(false);
+        try
+        {
+            return await target.CallAsync(procedure, realm, payload, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (long)timeout.TotalMilliseconds, timeout, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await target.CloseAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>AdvertiseDirectAsync plus embedding a service-cert chain (leaf-first PEM: leaf ++ org CA) for Slice 7c Direction B authorization. Opt-in; AdvertiseDirectAsync itself is unaffected.</summary>
+    public static async Task AdvertiseDirectWithCertChainAsync(Session session, KeyPair identity, byte[] realm, string procedure, TimeSpan ttl, byte[] certChainPem, CancellationToken ct = default)
+    {
+        var spec = new AdvertiseSpec { Realm = realm, Procedure = procedure, Advertiser = identity.NodeId() };
+        await session.AdvertiseAsync(spec, ct).ConfigureAwait(false);
+
+        var uri = RecordFactory.DiscoveryUri(realm, procedure);
+        var rec = RecordFactory.NewProcedureAdvertisementWithCertChain(identity.NodeId(), uri, session.RemoteInfo.NodeId, ttl, certChainPem);
+        rec = RecordFactory.Sign(rec, identity);
+        await DhtClient.PutRecordAsync(session, rec, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Resolves an arbitrary known station's dialable host/port from its own
     /// signed station_endpoint record -- the same lookup ResolveAsync
     /// performs internally after finding a procedure_advertisement, but
@@ -321,6 +413,23 @@ public static class DirectDial
     public static async Task<(Session Session, StreamHandle Stream)> OpenStreamDirectAsync(Session resolveVia, KeyPair identity, byte[] realm, string procedure, StreamMode mode, Value args, long deadlineMs, TimeSpan timeout, CancellationToken ct = default)
     {
         var resolved = await ResolveAsync(resolveVia, realm, procedure, ct).ConfigureAwait(false);
+        var target = await DialAndVerifyAsync(resolved.Host, resolved.Port, resolved.Station, identity, timeout, ct).ConfigureAwait(false);
+        try
+        {
+            var handle = await StreamHandle.OpenAsync(target, procedure, realm, mode, args, deadlineMs, identity, ct).ConfigureAwait(false);
+            return (target, handle);
+        }
+        catch (Exception)
+        {
+            await target.CloseAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>OpenStreamDirectAsync, resolved via ResolveWithCertChainAsync instead of ResolveAsync -- see both for the full contract. Opt-in managed-realm authorization; OpenStreamDirectAsync itself is unaffected.</summary>
+    public static async Task<(Session Session, StreamHandle Stream)> OpenStreamDirectWithCertChainAsync(Session resolveVia, KeyPair identity, byte[] realm, string procedure, byte[] realmCaPem, string expectedOrg, StreamMode mode, Value args, long deadlineMs, TimeSpan timeout, CancellationToken ct = default)
+    {
+        var resolved = await ResolveWithCertChainAsync(resolveVia, realm, procedure, realmCaPem, expectedOrg, ct).ConfigureAwait(false);
         var target = await DialAndVerifyAsync(resolved.Host, resolved.Port, resolved.Station, identity, timeout, ct).ConfigureAwait(false);
         try
         {
