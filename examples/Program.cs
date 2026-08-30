@@ -16,6 +16,8 @@ public static class Program
             "07" or "stream-provider" => StreamProvider.RunAsync,
             "08" or "errors" => ErrorHandling.RunAsync,
             "09" or "long-running-provider" => LongRunningProvider.RunAsync,
+            "10" or "direct-dial" => DirectDialExample.RunAsync,
+            "11" or "ucan" => UcanExample.RunAsync,
             _ => null,
         };
 
@@ -31,6 +33,8 @@ public static class Program
             Console.Error.WriteLine("  07 | stream-provider        streaming RPC, provider role (two sessions)");
             Console.Error.WriteLine("  08 | errors                 every error shape this SDK produces");
             Console.Error.WriteLine("  09 | long-running-provider  a provider serving many calls, not just one");
+            Console.Error.WriteLine("  10 | direct-dial            resolve+dial a provider via its DHT advertisement");
+            Console.Error.WriteLine("  11 | ucan                   mint a token, gate a served procedure by policy");
             return 1;
         }
 

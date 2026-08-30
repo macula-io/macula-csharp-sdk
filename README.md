@@ -20,13 +20,18 @@
 
 ---
 
-> **Status, 2026-08-28:** the FULL wire protocol is built and
+> **Status, 2026-08-30:** the FULL wire protocol is built and
 > **live-verified against the production station fleet**
 > (`station-de-frankfurt.macula.io`) — handshake, unary RPC (both caller
 > AND provider), PubSub, content transfer, and streaming RPC, every
 > primitive in both caller and provider roles where the protocol has
-> one. The frame layer is cross-checked byte-for-byte — including the
-> Ed25519 signature itself — against
+> one. On top of that: **direct-dial** (resolve a service via the mesh
+> DHT and dial it in one hop, plain and cert-chain-authorized, extended
+> to streaming and content transfer too), **UCAN** capability tokens
+> (mint/verify/introspect, policy-gated serving), a **supervised PubSub
+> pair**, **periodic re-advertise**, and **RPC telemetry auto-facts** —
+> all live-verified the same way. The frame layer is cross-checked
+> byte-for-byte — including the Ed25519 signature itself — against
 > [`macula-rust-sdk`](https://github.com/macula-io/macula-rust-sdk)'s own
 > fixed reference vectors: 15 golden frames, all matching. See
 > [Status](#status) for the full picture.
@@ -94,6 +99,14 @@ it doesn't.
 | Streaming RPC (STREAM_OPEN/DATA/END/REPLY) | ✅ | ✅ | Both roles live-verified against the real fleet |
 | RPC advertise/unadvertise | ✅ | — | |
 | Pubkey-pinned trust | ✅ | — | `Trust.Pin(nodeId)` — Ed25519 SPKI match, no CA chain needed |
+| Direct-dial (RPC) | ✅ | ✅ | `DirectDial.ResolveAsync`/`CallAsync`/`AdvertiseDirectAsync` — resolve+dial via the mesh DHT, no advertise-gossip propagation needed |
+| Direct-dial, cert-chain-authorized | ✅ | ✅ | `...WithCertChainAsync` variants — opt-in org/realm authorization on top of plain direct-dial |
+| Direct-dial (streaming, content) | ✅ | — | `DirectDial.OpenStreamDirectAsync`/`PutDirectAsync`/`GetDirectAsync` |
+| Periodic re-advertise | — | ✅ | `DirectDial.KeepAdvertisedDirectAsync` — keeps a station-side registration fresh for a long-lived provider |
+| Supervised PubSub pair | ✅ | ✅ | `SupervisedPubSub.RunPublisherAsync`/`RunSubscriberAsync` — callback-driven, auto-publishes `pubsub.publish_started_v1`/`publish_completed_v1` |
+| UCAN (mint/verify/introspect) | ✅ | ✅ | `UcanToken.Create`/`Verify`/`Decode` and friends — no library exists for the exact spec version macula uses, hand-rolled to match the reference exactly |
+| UCAN-gated serving | — | ✅ | `Session.ServeOneCallGatedAsync` + `Policy.Required`/`Open` — a caller with no/invalid token is refused before the handler ever runs |
+| RPC telemetry auto-facts | ✅ | ✅ | `rpc.sent_v1`/`rpc.completed_v1` (caller), `rpc.received_v1`/`rpc.replied_v1` (provider) — always-on, fire-and-forget, matching the reference exactly |
 
 ## Structure
 
@@ -107,7 +120,9 @@ src/Macula/
   Connection/               QUIC transport, handshake, Session (RPC/PubSub/serve)
   Content/                  Manifest (chunking/Merkle), put/get
   Streaming/                StreamHandle -- caller and provider roles
-examples/                  One example per primitive, plus error handling and a long-running provider (C#)
+  Dht/                      DirectDial (resolve/call/advertise via the mesh DHT) + CertChain
+  Ucan/                     UcanToken (mint/verify/introspect) + Policy (gated serving)
+examples/                  One example per primitive, plus error handling, a long-running provider, direct-dial, and UCAN (C#)
 examples-fsharp/           The same examples in F#
 tests/Macula.Tests/         Offline unit tests + live station tests
 ```
@@ -147,6 +162,8 @@ with matching numbers and behavior — same station calls, same output shape.
 | 07 | `dotnet run --project examples -- 07` | `dotnet run --project examples-fsharp -- 07` | Streaming RPC, provider role (two `Session`s, one process) |
 | 08 | `dotnet run --project examples -- 08` | `dotnet run --project examples-fsharp -- 08` | Every error shape this SDK produces, handled |
 | 09 | `dotnet run --project examples -- 09` | `dotnet run --project examples-fsharp -- 09` | A provider serving many calls over its lifetime, not just one |
+| 10 | `dotnet run --project examples -- 10` | `dotnet run --project examples-fsharp -- 10` | Direct-dial: advertise via the mesh DHT, resolve, dial, call — no advertise-gossip propagation needed |
+| 11 | `dotnet run --project examples -- 11` | `dotnet run --project examples-fsharp -- 11` | UCAN: mint a token, gate a served procedure by policy, show both the rejected and accepted paths |
 
 Examples 06, 07, and 09 run more than one role in **one process, multiple
 `Session`s** — there's no cgo/fork hazard here the way there was in
@@ -255,11 +272,46 @@ roles where the protocol has one, and live-verified against
   addable later with zero wire change)
 - Streaming RPC, caller and provider (`StreamHandle.OpenAsync` /
   `StreamHandle.AcceptAsync`)
+- Direct-dial: resolve a service via a signed DHT record and dial it in
+  one hop, plain and cert-chain-authorized, for RPC, streaming, and
+  content transfer (`DirectDial`) — see [Direct-dial and the mesh
+  DHT](#direct-dial-and-the-mesh-dht) for what "DHT" means here
+- UCAN capability tokens: mint/verify/introspect, plus policy-gated
+  serving that refuses an unauthorized caller before a handler ever runs
+  (`UcanToken`, `Policy`, `Session.ServeOneCallGatedAsync`)
+- A supervised PubSub pair (`SupervisedPubSub`) and periodic re-advertise
+  (`DirectDial.KeepAdvertisedDirectAsync`) for long-lived providers
+- RPC telemetry auto-facts, always-on, matching the reference exactly
 
-Not built, matching every sibling SDK's own documented v1 scope: DHT,
-HyParView, Plumtree gossip primitives — these are station-to-station
-overlay concerns, explicitly out of scope for a leaf client by design,
-not an unfinished gap.
+Not built, matching every sibling SDK's own documented v1 scope: real DHT
+peer participation (Kademlia routing tables, replication) — this library
+only ever asks whichever station it's already connected to look something
+up in or publish to the DHT via ordinary RPC (`_dht.put_record`/
+`_dht.find_record`), the same way `macula-go-sdk`/`macula-rust-sdk` do.
+HyParView/Plumtree gossip primitives are station-to-station overlay
+concerns, explicitly out of scope for a leaf client by design, not an
+unfinished gap.
+
+## Direct-dial and the mesh DHT
+
+"Direct-dial" doesn't mean this library is a DHT participant — the actual
+Kademlia routing table, replication, and station-to-station gossip stay
+entirely inside `macula-station` (the relay). What `DirectDial` adds is
+much narrower: two RPC calls (`_dht.put_record`/`_dht.find_record`) to
+whichever station this session is already connected to, plus the
+signature verification to trust what comes back. The problem it solves:
+ordinary `Session.AdvertiseAsync`/`CallAsync` only work if the caller's
+station and the provider's station have already exchanged routing gossip
+— best-effort, and on a fleet with more than a couple of stations, often
+incomplete. The DHT is the one directory every station already
+participates in regardless of gossip state, so resolving a
+`procedure_advertisement` record there and dialing the named station
+directly works even when ordinary routing hasn't (yet) propagated a
+route. `DirectDial.AdvertiseDirectAsync` publishes both the DHT record
+and an ordinary `Session.AdvertiseAsync` registration — a station still
+needs *something* registered to route an inbound CALL to once dialed;
+direct-dial only changes how the caller *finds* the station, not whether
+a handler is waiting once it gets there.
 
 **NuGet publish:** not live yet. `.github/workflows/release.yml` publishes
 via [NuGet Trusted Publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing)

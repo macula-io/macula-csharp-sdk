@@ -19,6 +19,8 @@ let main argv =
         | "07" | "stream-provider" -> Some StreamProvider.run
         | "08" | "errors" -> Some ErrorHandling.run
         | "09" | "long-running-provider" -> Some LongRunningProvider.run
+        | "10" | "direct-dial" -> Some DirectDialExample.run
+        | "11" | "ucan" -> Some UcanExample.run
         | _ -> None
 
     match example with
@@ -33,6 +35,8 @@ let main argv =
         eprintfn "  07 | stream-provider        streaming RPC, provider role (two sessions)"
         eprintfn "  08 | errors                 every error shape this SDK produces"
         eprintfn "  09 | long-running-provider  a provider serving many calls, not just one"
+        eprintfn "  10 | direct-dial            resolve+dial a provider via its DHT advertisement"
+        eprintfn "  11 | ucan                   mint a token, gate a served procedure by policy"
         1
     | Some run ->
         (run ()).GetAwaiter().GetResult()

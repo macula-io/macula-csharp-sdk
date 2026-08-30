@@ -16,6 +16,8 @@
     <Compile Include="07_StreamProvider.fs" />
     <Compile Include="08_ErrorHandling.fs" />
     <Compile Include="09_LongRunningProvider.fs" />
+    <Compile Include="10_DirectDial.fs" />
+    <Compile Include="11_Ucan.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
