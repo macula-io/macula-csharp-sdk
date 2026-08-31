@@ -229,7 +229,7 @@ public static class RecordFactory
     /// advertisement key input is hex(realm) + "/" + procedure, so the same
     /// procedure name under different realms doesn't collide in the DHT.
     /// </summary>
-    public static string DiscoveryUri(byte[] realm, string procedure) => Convert.ToHexStringLower(realm) + "/" + procedure;
+    public static string DiscoveryUri(byte[] realm, string procedure) => Convert.ToHexString(realm) + "/" + procedure;
 }
 
 /// <summary>procedure_advertisement fields, read out of a Record's payload. CertChain is null when the advertisement carries none (the common, unmanaged-realm case).</summary>
