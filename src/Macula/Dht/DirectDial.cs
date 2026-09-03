@@ -322,6 +322,29 @@ public static class DirectDial
     }
 
     /// <summary>
+    /// CallAsync, presenting ucanToken to a provider gated with
+    /// <see cref="Policy.Required"/>. Every hecate-om capability is
+    /// advertised via AdvertiseDirectAsync, so this is the only way this
+    /// SDK can reach a UCAN-gated capability at all -- CallAsync itself
+    /// has no token parameter, and Session.CallWithUcanAsync is the
+    /// plain, non-direct path, which cannot resolve a direct-dial-only
+    /// advertisement to begin with.
+    /// </summary>
+    public static async Task<CallResponse> CallWithUcanAsync(Session resolveVia, KeyPair identity, byte[] realm, string procedure, Value payload, TimeSpan timeout, byte[] ucanToken, CancellationToken ct = default)
+    {
+        var resolved = await ResolveAsync(resolveVia, realm, procedure, ct).ConfigureAwait(false);
+        var target = await DialAndVerifyAsync(resolved.Host, resolved.Port, resolved.Station, identity, timeout, ct).ConfigureAwait(false);
+        try
+        {
+            return await target.CallWithUcanAsync(procedure, realm, payload, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (long)timeout.TotalMilliseconds, timeout, ucanToken, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await target.CloseAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Publishes a signed procedure_advertisement naming session's own
     /// currently-connected station as procedure's server, discoverable by
     /// any caller's ResolveAsync/CallAsync. Mirrors
