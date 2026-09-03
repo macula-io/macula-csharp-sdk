@@ -339,6 +339,18 @@ public static class DirectDial
     /// survive the connection that sent it being replaced, so a long-lived
     /// server needs to call this again on its own schedule --
     /// see <see cref="KeepAdvertisedDirectAsync"/>.
+    ///
+    /// Both steps run on the ONE session passed in, so this must not be
+    /// called on a session another task is serving with
+    /// <see cref="Session.ServeOneCallAsync"/> at the same time: the
+    /// put_record CALL's RESULT frame is consumed by that serve loop and
+    /// the put times out (seen live 2026-09-03 in macula-cli's Go daemon,
+    /// which did exactly that). A provider that is already serving should
+    /// advertise on its serving session and publish the record
+    /// (<see cref="RecordFactory.NewProcedureAdvertisement"/> +
+    /// <see cref="RecordFactory.Sign"/> + <see cref="DhtClient.PutRecordAsync"/>)
+    /// on a second session -- the same "second Session" rule
+    /// <see cref="Session.ServeOneCallAsync"/>'s own doc gives.
     /// </summary>
     public static async Task AdvertiseDirectAsync(Session session, KeyPair identity, byte[] realm, string procedure, TimeSpan ttl, CancellationToken ct = default)
     {
@@ -366,6 +378,10 @@ public static class DirectDial
     /// regardless. This loop cannot detect or repair a dead Session on its
     /// own -- if session's underlying connection has actually gone down,
     /// every tick will keep failing the same way until ct is cancelled.
+    ///
+    /// Same session rule as <see cref="AdvertiseDirectAsync"/>: run this
+    /// loop on a session nothing else is serving on, never alongside a
+    /// <see cref="Session.ServeOneCallAsync"/> loop on the same session.
     /// </summary>
     public static async Task KeepAdvertisedDirectAsync(Session session, KeyPair identity, byte[] realm, string procedure, TimeSpan ttl, TimeSpan interval, Action<Exception>? onError, CancellationToken ct)
     {
