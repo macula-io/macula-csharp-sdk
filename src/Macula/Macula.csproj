@@ -14,7 +14,7 @@
     <Version>0.2.1</Version>
     <Description>Native .NET client for the Macula mesh wire protocol -- QUIC transport, deterministic CBOR, Ed25519 identity, unary RPC, PubSub, content transfer, and streaming RPC (both caller and provider roles), direct-dial (plain and cert-chain-authorized), periodic re-advertise, a supervised pubsub pair, UCAN (mint/verify/introspect and policy-gated serving), and RPC telemetry facts. Written in C#, usable from any .NET language (examples included for both C# and F#). No FFI, no native protocol library.</Description>
     <Authors>Macula</Authors>
-    <PackageLicenseExpression>Apache-2.0 OR MIT</PackageLicenseExpression>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/macula-io/macula-dotnet</PackageProjectUrl>
     <RepositoryUrl>https://github.com/macula-io/macula-dotnet</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

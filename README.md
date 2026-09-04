@@ -1,7 +1,7 @@
 # macula-dotnet
 
 [![CI](https://img.shields.io/github/actions/workflow/status/macula-io/macula-dotnet/ci.yml?branch=main&label=CI)](https://github.com/macula-io/macula-dotnet/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 [![.NET](https://img.shields.io/badge/.NET-10.0%2B-512BD4?logo=dotnet)](https://dotnet.microsoft.com)
 [![no FFI](https://img.shields.io/badge/FFI-none-success.svg)](#why-native-not-a-binding)
 [![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-support-ea4aaa.svg?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/rgfaber)
@@ -321,8 +321,7 @@ a local `dotnet pack`, or a `ProjectReference` to this repo directly.
 
 ## License
 
-Dual-licensed under Apache-2.0 or MIT, at your option — see
-[LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
 
 The .NET emblem in this README's header logo is Microsoft's official
 [.NET logo](https://github.com/dotnet/brand/blob/main/logo/dotnet-logo.svg)
