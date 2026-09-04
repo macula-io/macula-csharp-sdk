@@ -59,7 +59,7 @@ public sealed class HelloSignatureInvalidException : Exception
 [SupportedOSPlatform("linux")]
 [SupportedOSPlatform("macos")]
 [SupportedOSPlatform("windows")]
-public sealed class Session : IAsyncDisposable
+public sealed class Session : IAsyncDisposable, IFrameSink
 {
     private readonly QuicConnection _connection;
     private readonly FrameStream _control;
@@ -378,8 +378,17 @@ public sealed class Session : IAsyncDisposable
     /// both pass, REPLIED for the success/handler-error outcomes but NOT
     /// for a handler crash -- the reference's own crash-before-publish
     /// omission, matched not "improved."
+    ///
+    /// `internal`, not `private`, and takes <see cref="IFrameSink"/> rather
+    /// than a concrete <see cref="Session"/>: <see cref="StationPool"/>
+    /// reuses this exact dispatch logic for an inbound CALL arriving on a
+    /// pooled link, rather than forking a second copy of the policy/lookup/
+    /// crash-handling semantics that could drift from this one. The method
+    /// is static and closure-free (only reads its parameters), so widening
+    /// its visibility changes nothing about how it behaves when called
+    /// from here.
     /// </summary>
-    private static async Task<Value.MapValue> BuildCallReplyAsync(Session? session, CallInfo callInfo, CallLookup lookup, PolicyLookup policy, KeyPair identity)
+    internal static async Task<Value.MapValue> BuildCallReplyAsync(IFrameSink? session, CallInfo callInfo, CallLookup lookup, PolicyLookup policy, KeyPair identity)
     {
         var selfPub = identity.NodeId();
         try

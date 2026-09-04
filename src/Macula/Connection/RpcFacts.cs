@@ -27,13 +27,13 @@ internal static class RpcFacts
     private const string RpcReceivedTopic = "rpc.received_v1";
     private const string RpcRepliedTopic = "rpc.replied_v1";
 
-    public static async Task AnnounceSentAsync(Session? session, byte[] realm, KeyPair identity, byte[] requestId)
+    public static async Task AnnounceSentAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId)
     {
         await AnnounceAsync(session, realm, identity, RpcSentTopic, RequestIdFields(requestId)).ConfigureAwait(false);
     }
 
     /// <summary>Matches macula_request.erl's outcome_fields/2: completed (no exception, not a bolt4 ERROR frame) or failed (either).</summary>
-    public static async Task AnnounceCompletedAsync(Session? session, byte[] realm, KeyPair identity, byte[] requestId, CallResponse? resp, Exception? err)
+    public static async Task AnnounceCompletedAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId, CallResponse? resp, Exception? err)
     {
         var fields = RequestIdFields(requestId);
         if (err is not null)
@@ -51,7 +51,7 @@ internal static class RpcFacts
         await AnnounceAsync(session, realm, identity, RpcCompletedTopic, fields).ConfigureAwait(false);
     }
 
-    public static async Task AnnounceReceivedAsync(Session? session, byte[] realm, KeyPair identity, byte[] requestId)
+    public static async Task AnnounceReceivedAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId)
     {
         await AnnounceAsync(session, realm, identity, RpcReceivedTopic, RequestIdFields(requestId)).ConfigureAwait(false);
     }
@@ -64,7 +64,7 @@ internal static class RpcFacts
     /// before its own publish_replied/2 call is ever reached, so
     /// rpc.replied_v1 is never published for a crash either.
     /// </summary>
-    public static async Task AnnounceRepliedAsync(Session? session, byte[] realm, KeyPair identity, byte[] requestId, string? handlerErrorMessage)
+    public static async Task AnnounceRepliedAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId, string? handlerErrorMessage)
     {
         var fields = RequestIdFields(requestId);
         if (handlerErrorMessage is not null)
@@ -89,7 +89,7 @@ internal static class RpcFacts
 
     // A no-op if session is null -- only network-free unit tests
     // exercising pure dispatch logic would pass null.
-    private static async Task AnnounceAsync(Session? session, byte[] realm, KeyPair identity, string topic, List<KeyValuePair<Value, Value>> fields)
+    private static async Task AnnounceAsync(IFrameSink? session, byte[] realm, KeyPair identity, string topic, List<KeyValuePair<Value, Value>> fields)
     {
         if (session is null)
         {
