@@ -27,13 +27,13 @@ internal static class RpcFacts
     private const string RpcReceivedTopic = "rpc.received_v1";
     private const string RpcRepliedTopic = "rpc.replied_v1";
 
-    public static async Task AnnounceSentAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId)
+    public static async Task AnnounceSentAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId, CancellationToken ct = default)
     {
-        await AnnounceAsync(session, realm, identity, RpcSentTopic, RequestIdFields(requestId)).ConfigureAwait(false);
+        await AnnounceAsync(session, realm, identity, RpcSentTopic, RequestIdFields(requestId), ct).ConfigureAwait(false);
     }
 
     /// <summary>Matches macula_request.erl's outcome_fields/2: completed (no exception, not a bolt4 ERROR frame) or failed (either).</summary>
-    public static async Task AnnounceCompletedAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId, CallResponse? resp, Exception? err)
+    public static async Task AnnounceCompletedAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId, CallResponse? resp, Exception? err, CancellationToken ct = default)
     {
         var fields = RequestIdFields(requestId);
         if (err is not null)
@@ -48,12 +48,12 @@ internal static class RpcFacts
         {
             fields.Add(new KeyValuePair<Value, Value>(Value.Text("outcome"), Value.Text("completed")));
         }
-        await AnnounceAsync(session, realm, identity, RpcCompletedTopic, fields).ConfigureAwait(false);
+        await AnnounceAsync(session, realm, identity, RpcCompletedTopic, fields, ct).ConfigureAwait(false);
     }
 
-    public static async Task AnnounceReceivedAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId)
+    public static async Task AnnounceReceivedAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId, CancellationToken ct = default)
     {
-        await AnnounceAsync(session, realm, identity, RpcReceivedTopic, RequestIdFields(requestId)).ConfigureAwait(false);
+        await AnnounceAsync(session, realm, identity, RpcReceivedTopic, RequestIdFields(requestId), ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -64,7 +64,7 @@ internal static class RpcFacts
     /// before its own publish_replied/2 call is ever reached, so
     /// rpc.replied_v1 is never published for a crash either.
     /// </summary>
-    public static async Task AnnounceRepliedAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId, string? handlerErrorMessage)
+    public static async Task AnnounceRepliedAsync(IFrameSink? session, byte[] realm, KeyPair identity, byte[] requestId, string? handlerErrorMessage, CancellationToken ct = default)
     {
         var fields = RequestIdFields(requestId);
         if (handlerErrorMessage is not null)
@@ -75,7 +75,7 @@ internal static class RpcFacts
         {
             fields.Add(new KeyValuePair<Value, Value>(Value.Text("outcome"), Value.Text("replied")));
         }
-        await AnnounceAsync(session, realm, identity, RpcRepliedTopic, fields).ConfigureAwait(false);
+        await AnnounceAsync(session, realm, identity, RpcRepliedTopic, fields, ct).ConfigureAwait(false);
     }
 
     private static List<KeyValuePair<Value, Value>> RequestIdFields(byte[] requestId) =>
@@ -89,7 +89,13 @@ internal static class RpcFacts
 
     // A no-op if session is null -- only network-free unit tests
     // exercising pure dispatch logic would pass null.
-    private static async Task AnnounceAsync(IFrameSink? session, byte[] realm, KeyPair identity, string topic, List<KeyValuePair<Value, Value>> fields)
+    //
+    // `ct` bounds this write against the SAME deadline as whatever it's
+    // describing (a call, a serve dispatch) -- passing `default` here would
+    // make a telemetry publish the one write in a caller's whole operation
+    // with no time bound, able to hang past that operation's own timeout
+    // while a `finally` block waits on it.
+    private static async Task AnnounceAsync(IFrameSink? session, byte[] realm, KeyPair identity, string topic, List<KeyValuePair<Value, Value>> fields, CancellationToken ct)
     {
         if (session is null)
         {
@@ -106,7 +112,7 @@ internal static class RpcFacts
         };
         try
         {
-            await session.PublishAsync(spec).ConfigureAwait(false);
+            await session.PublishAsync(spec, ct).ConfigureAwait(false);
         }
         catch (Exception)
         {

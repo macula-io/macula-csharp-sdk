@@ -197,7 +197,7 @@ public sealed class Session : IAsyncDisposable, IFrameSink
     public async Task<CallResponse> CallAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, CancellationToken ct = default)
     {
         var requestId = RpcFacts.RandomRequestId();
-        await RpcFacts.AnnounceSentAsync(this, realm, Identity, requestId).ConfigureAwait(false);
+        await RpcFacts.AnnounceSentAsync(this, realm, Identity, requestId, ct).ConfigureAwait(false);
         CallResponse? resp = null;
         Exception? err = null;
         try
@@ -212,7 +212,7 @@ public sealed class Session : IAsyncDisposable, IFrameSink
         }
         finally
         {
-            await RpcFacts.AnnounceCompletedAsync(this, realm, Identity, requestId, resp, err).ConfigureAwait(false);
+            await RpcFacts.AnnounceCompletedAsync(this, realm, Identity, requestId, resp, err, ct).ConfigureAwait(false);
         }
     }
 
@@ -220,7 +220,7 @@ public sealed class Session : IAsyncDisposable, IFrameSink
     public async Task<CallResponse> CallWithUcanAsync(string procedure, byte[] realm, Value payload, long deadlineMs, TimeSpan timeout, byte[] ucanToken, CancellationToken ct = default)
     {
         var requestId = RpcFacts.RandomRequestId();
-        await RpcFacts.AnnounceSentAsync(this, realm, Identity, requestId).ConfigureAwait(false);
+        await RpcFacts.AnnounceSentAsync(this, realm, Identity, requestId, ct).ConfigureAwait(false);
         CallResponse? resp = null;
         Exception? err = null;
         try
@@ -235,7 +235,7 @@ public sealed class Session : IAsyncDisposable, IFrameSink
         }
         finally
         {
-            await RpcFacts.AnnounceCompletedAsync(this, realm, Identity, requestId, resp, err).ConfigureAwait(false);
+            await RpcFacts.AnnounceCompletedAsync(this, realm, Identity, requestId, resp, err, ct).ConfigureAwait(false);
         }
     }
 
@@ -358,7 +358,7 @@ public sealed class Session : IAsyncDisposable, IFrameSink
                 continue; // not ours -- see this method's doc on the limitation
             }
 
-            var reply = await BuildCallReplyAsync(this, callInfo, lookup, policy, Identity).ConfigureAwait(false);
+            var reply = await BuildCallReplyAsync(this, callInfo, lookup, policy, Identity, ct).ConfigureAwait(false);
             await SendAsync(reply, ct).ConfigureAwait(false);
             return;
         }
@@ -388,7 +388,7 @@ public sealed class Session : IAsyncDisposable, IFrameSink
     /// its visibility changes nothing about how it behaves when called
     /// from here.
     /// </summary>
-    internal static async Task<Value.MapValue> BuildCallReplyAsync(IFrameSink? session, CallInfo callInfo, CallLookup lookup, PolicyLookup policy, KeyPair identity)
+    internal static async Task<Value.MapValue> BuildCallReplyAsync(IFrameSink? session, CallInfo callInfo, CallLookup lookup, PolicyLookup policy, KeyPair identity, CancellationToken ct = default)
     {
         var selfPub = identity.NodeId();
         try
@@ -407,17 +407,17 @@ public sealed class Session : IAsyncDisposable, IFrameSink
         }
 
         var requestId = RpcFacts.RandomRequestId();
-        await RpcFacts.AnnounceReceivedAsync(session, callInfo.Realm, identity, requestId).ConfigureAwait(false);
+        await RpcFacts.AnnounceReceivedAsync(session, callInfo.Realm, identity, requestId, ct).ConfigureAwait(false);
 
         try
         {
             var value = await handler(callInfo.Payload).ConfigureAwait(false);
-            await RpcFacts.AnnounceRepliedAsync(session, callInfo.Realm, identity, requestId, null).ConfigureAwait(false);
+            await RpcFacts.AnnounceRepliedAsync(session, callInfo.Realm, identity, requestId, null, ct).ConfigureAwait(false);
             return ResultFrame.Build(new ResultSpec { CallId = callInfo.CallId, Payload = value, RespondedBy = selfPub });
         }
         catch (CallHandlerException e)
         {
-            await RpcFacts.AnnounceRepliedAsync(session, callInfo.Realm, identity, requestId, e.Message).ConfigureAwait(false);
+            await RpcFacts.AnnounceRepliedAsync(session, callInfo.Realm, identity, requestId, e.Message, ct).ConfigureAwait(false);
             return CallErrorFrame.Build(new CallErrorSpec { CallId = callInfo.CallId, Code = Bolt4Code.UnknownError, ReportedBy = selfPub, Detail = e.Message });
         }
         catch (Exception)

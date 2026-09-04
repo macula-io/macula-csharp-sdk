@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.Versioning;
+using System.Threading.Channels;
 using Macula.Frame;
 using Macula.Identity;
 using Macula.Ucan;
@@ -61,6 +62,16 @@ public sealed class StationPoolOptions
     /// into "1s plus however long that takes." Default 2s.
     /// </summary>
     public TimeSpan CloseTimeout { get; init; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Upper bound on any single wire-level write issued through a link's
+    /// send gate outside an application call (replay, Subscribe/Advertise/
+    /// Unadvertise). Matters most during respawn's replay step, which runs
+    /// under the pool's single state lock -- a stall there would block
+    /// every OTHER Subscribe/Advertise/Publish/Call across the whole pool,
+    /// not just this one link, for as long as the write hangs. Default 5s.
+    /// </summary>
+    public TimeSpan WireWriteTimeout { get; init; } = TimeSpan.FromSeconds(5);
 }
 
 /// <summary>
@@ -233,6 +244,13 @@ public sealed class StationPool : IAsyncDisposable
         {
             await link.PublishAsync(spec, ct).ConfigureAwait(false);
             return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Genuine caller cancellation, not a link rejecting the write --
+            // let it propagate through Task.WhenAll rather than being
+            // folded into "every targeted link rejected the publish."
+            throw;
         }
         catch (Exception)
         {
@@ -454,17 +472,42 @@ public sealed class StationPool : IAsyncDisposable
                     return resp;
                 }
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Genuine caller cancellation, as opposed to CallOnLinkAsync's
+                // own per-link timeout (which it converts to a TimeoutException
+                // before it ever reaches here) -- never retry across links on
+                // this, unlike a per-link failure.
+                throw;
+            }
             catch (Exception) when (!isLast)
             {
-                // transport-level failure on this link -- try the next one.
+                // A per-link timeout or transport-level failure -- try the next one.
             }
         }
 
         throw new NoHealthyStationException();
     }
 
+    /// <summary>
+    /// The whole operation (send, RPC-telemetry writes, and the wait for a
+    /// reply) is bounded by ONE deadline derived from <paramref name="timeout"/>,
+    /// not just the reply-wait -- a caller with a 5s budget must not be able
+    /// to block indefinitely on <see cref="PooledLink.SendGatedAsync"/> if
+    /// some other write (e.g. a slow inbound-CALL reply) is holding the
+    /// link's send gate. `boundedCt` firing from the deadline (as opposed to
+    /// from <paramref name="ct"/> itself) is converted to
+    /// <see cref="TimeoutException"/>, mirroring the same
+    /// `OperationCanceledException) when (!ct.IsCancellationRequested)`
+    /// pattern <see cref="Session.CallAsync"/> already uses for the
+    /// identical reason.
+    /// </summary>
     private async Task<CallResponse> CallOnLinkAsync(PooledLink link, byte[] realm, string procedure, Value payload, TimeSpan timeout, byte[] ucanToken, CancellationToken ct)
     {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+        var boundedCt = timeoutCts.Token;
+
         var callId = new byte[16];
         Random.Shared.NextBytes(callId);
         var key = Convert.ToHexStringLower(callId);
@@ -472,7 +515,7 @@ public sealed class StationPool : IAsyncDisposable
         link.PendingCalls[key] = tcs;
 
         var requestId = RpcFacts.RandomRequestId();
-        await RpcFacts.AnnounceSentAsync(link, realm, _identity, requestId).ConfigureAwait(false);
+        await RpcFacts.AnnounceSentAsync(link, realm, _identity, requestId, boundedCt).ConfigureAwait(false);
 
         var spec = new CallSpec
         {
@@ -489,14 +532,14 @@ public sealed class StationPool : IAsyncDisposable
         Exception? err = null;
         try
         {
-            await link.SendGatedAsync((s, c) => s.SendAsync(CallFrame.Build(spec), c), ct).ConfigureAwait(false);
-            resp = await tcs.Task.WaitAsync(timeout, ct).ConfigureAwait(false);
+            await link.SendGatedAsync((s, c) => s.SendAsync(CallFrame.Build(spec), c), boundedCt).ConfigureAwait(false);
+            resp = await tcs.Task.WaitAsync(boundedCt).ConfigureAwait(false);
             return resp;
         }
-        catch (TimeoutException e)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            err = e;
-            throw;
+            err = new TimeoutException($"no response for call_id {key} within {timeout}");
+            throw err;
         }
         catch (Exception e)
         {
@@ -506,7 +549,7 @@ public sealed class StationPool : IAsyncDisposable
         finally
         {
             link.PendingCalls.TryRemove(key, out _);
-            await RpcFacts.AnnounceCompletedAsync(link, realm, _identity, requestId, resp, err).ConfigureAwait(false);
+            await RpcFacts.AnnounceCompletedAsync(link, realm, _identity, requestId, resp, err, boundedCt).ConfigureAwait(false);
         }
     }
 
@@ -585,7 +628,6 @@ public sealed class StationPool : IAsyncDisposable
                 try
                 {
                     link.Session = session;
-                    link.PendingCalls.Clear();
                     await ReplayOntoAsync(link, poolCt).ConfigureAwait(false);
                     link.Connected = true;
                 }
@@ -596,6 +638,10 @@ public sealed class StationPool : IAsyncDisposable
             }
             catch (OperationCanceledException) when (poolCt.IsCancellationRequested)
             {
+                // link.Connected/Session were never flipped to reflect this
+                // session on the pool-shutdown path (the state lock wait
+                // itself was what got cancelled), so there is nothing to
+                // unmark -- just close it and stop.
                 await CloseSessionAsync(session).ConfigureAwait(false);
                 return;
             }
@@ -606,6 +652,11 @@ public sealed class StationPool : IAsyncDisposable
             }
             catch (OperationCanceledException) when (poolCt.IsCancellationRequested)
             {
+                // Pool shutdown, not a fault -- still unmark the link (a
+                // caller mid-CallAsync against it, or Status/Links read
+                // after DisposeAsync returns, must not see a stale
+                // Connected=true) before closing.
+                await MarkDisconnectedAsync(link).ConfigureAwait(false);
                 await CloseSessionAsync(session).ConfigureAwait(false);
                 return;
             }
@@ -619,20 +670,26 @@ public sealed class StationPool : IAsyncDisposable
                 // RecvAsync failure propagate, never a parse mismatch.
             }
 
-            await _stateLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-            try
-            {
-                link.Connected = false;
-                link.Session = null;
-            }
-            finally
-            {
-                _stateLock.Release();
-            }
-            FailPendingCalls(link, new IOException($"link to {link.Seed.Host}:{link.Seed.Port} disconnected"));
+            await MarkDisconnectedAsync(link).ConfigureAwait(false);
             await CloseSessionAsync(session).ConfigureAwait(false);
             await DelayRespawnAsync(poolCt).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Flip a link to disconnected and fail its in-flight calls immediately, rather than letting them wait out their own timeout against a link that's already known to be gone.</summary>
+    private async Task MarkDisconnectedAsync(PooledLink link)
+    {
+        await _stateLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            link.Connected = false;
+            link.Session = null;
+        }
+        finally
+        {
+            _stateLock.Release();
+        }
+        FailPendingCalls(link, new IOException($"link to {link.Seed.Host}:{link.Seed.Port} disconnected"));
     }
 
     /// <summary>
@@ -670,14 +727,31 @@ public sealed class StationPool : IAsyncDisposable
         }
     }
 
-    /// <summary>A replay write's failure is swallowed, matching macula_client_replay.erl exactly: this link's own next respawn retries.</summary>
-    private static async Task TrySendReplayAsync(PooledLink link, CancellationToken ct, Func<Session, CancellationToken, Task> send)
+    /// <summary>
+    /// A write's failure is swallowed, matching macula_client_replay.erl
+    /// exactly for a REPLAY write: this link's own next respawn retries.
+    /// Also used for a live (non-replay) wire-issue from Subscribe/
+    /// Advertise/Unadvertise -- same swallow policy there too, since those
+    /// are already fire-and-forget on the wire and the pool's own tracked
+    /// state (which is what actually matters) was already updated before
+    /// this runs.
+    ///
+    /// Bounded by <see cref="StationPoolOptions.WireWriteTimeout"/>, NOT
+    /// just `ct`: called from ReplayOntoAsync while `_stateLock` is held,
+    /// so an unbounded stall here would block every other pool operation,
+    /// not just this one link. A timeout here is swallowed like any other
+    /// write failure; only genuine cancellation via the ORIGINAL `ct`
+    /// propagates.
+    /// </summary>
+    private async Task TrySendReplayAsync(PooledLink link, CancellationToken ct, Func<Session, CancellationToken, Task> send)
     {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(_options.WireWriteTimeout);
         try
         {
-            await link.SendGatedAsync(send, ct).ConfigureAwait(false);
+            await link.SendGatedAsync(send, cts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
         }
@@ -734,30 +808,80 @@ public sealed class StationPool : IAsyncDisposable
     // Pump -- the sole reader of a link's control stream
     //====================================================================
 
+    /// <summary>
+    /// EVENT frames go through a per-link, single-consumer Channel rather
+    /// than a bare `Task.Run` per frame: dispatching each EVENT to its own
+    /// fire-and-forget Task let the threadpool reorder them relative to
+    /// arrival, and let the SAME subscriber's handler be re-entered
+    /// concurrently for two events that arrived a moment apart on this
+    /// link -- neither matches the reference (one link's frames arrive in
+    /// strict order off one QUIC stream; a gen_server-owned mailbox
+    /// delivers to a subscriber pid one message at a time). A single
+    /// dedicated consumer task drains the channel strictly in receipt
+    /// order, awaiting each event's full dedup+fan-out before starting the
+    /// next -- ordering and non-reentrancy are per link, matching the
+    /// bound this class's own doc already states (no CROSS-link ordering
+    /// is attempted; that would need the reorder buffer this pass
+    /// deliberately doesn't port).
+    ///
+    /// The channel write itself is a fast, non-blocking TryWrite (unbounded
+    /// channel), so the pump loop's own promptness at reading CALL/RESULT/
+    /// ERROR frames is unaffected by how quickly the event consumer keeps up.
+    /// </summary>
     private async Task PumpAsync(PooledLink link, Session session, CancellationToken poolCt)
     {
-        while (true)
+        var events = Channel.CreateUnbounded<Value>(new UnboundedChannelOptions { SingleWriter = true, SingleReader = true });
+        var eventConsumer = Task.Run(() => ConsumeEventsAsync(events.Reader, poolCt), CancellationToken.None);
+        try
         {
-            var frame = await session.RecvAsync(poolCt).ConfigureAwait(false);
-            switch (FrameType(frame))
+            while (true)
             {
-                case "event":
-                    _ = Task.Run(() => HandleEventAsync(frame, poolCt), CancellationToken.None);
-                    break;
-                case "call":
-                    _ = Task.Run(() => HandleInboundCallAsync(link, frame, poolCt), CancellationToken.None);
-                    break;
-                case "result":
-                case "error":
-                    CompletePendingCall(link, frame);
-                    break;
-                default:
-                    // Tolerated, not fatal -- e.g. the live station's own
-                    // unprompted advertise broadcasts for its built-in
-                    // _content.* procedures, periodically sent on every
-                    // connected client's control stream.
-                    break;
+                var frame = await session.RecvAsync(poolCt).ConfigureAwait(false);
+                switch (FrameType(frame))
+                {
+                    case "event":
+                        events.Writer.TryWrite(frame);
+                        break;
+                    case "call":
+                        _ = Task.Run(() => HandleInboundCallAsync(link, frame, poolCt), CancellationToken.None);
+                        break;
+                    case "result":
+                    case "error":
+                        CompletePendingCall(link, frame);
+                        break;
+                    default:
+                        // Tolerated, not fatal -- e.g. the live station's own
+                        // unprompted advertise broadcasts for its built-in
+                        // _content.* procedures, periodically sent on every
+                        // connected client's control stream.
+                        break;
+                }
             }
+        }
+        finally
+        {
+            // No more EVENTs will arrive for this (dying or pool-closing)
+            // link. The consumer drains whatever is already buffered, in
+            // order, then exits on its own -- not awaited here, so a slow
+            // straggler event doesn't delay RunLinkAsync's own respawn
+            // cycle.
+            events.Writer.TryComplete();
+            _ = eventConsumer;
+        }
+    }
+
+    private async Task ConsumeEventsAsync(ChannelReader<Value> reader, CancellationToken poolCt)
+    {
+        try
+        {
+            await foreach (var frame in reader.ReadAllAsync(poolCt).ConfigureAwait(false))
+            {
+                await HandleEventAsync(frame, poolCt).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Pool disposing -- whatever is still buffered is abandoned.
         }
     }
 
@@ -838,12 +962,19 @@ public sealed class StationPool : IAsyncDisposable
             return;
         }
 
-        CallLookup lookup = (realm, procedure) =>
-            _procs.TryGetValue((ToHex(realm), procedure), out var entry) ? entry.Handler : null;
-        PolicyLookup policyLookup = (realm, procedure) =>
-            _procs.TryGetValue((ToHex(realm), procedure), out var entry) ? entry.Policy : Policy.Open;
+        // Read _procs exactly ONCE, so the policy check and the handler
+        // dispatch that follows it always agree on the same registration --
+        // two independent TryGetValue calls here would let a concurrent
+        // AdvertiseAsync that TIGHTENS the policy (e.g. Open -> Required)
+        // land in between them: the policy check would pass against the
+        // stale Open entry while the handler that runs is already the new
+        // one, serving an unauthenticated caller a procedure that had
+        // already been re-gated. A single snapshot closes that window.
+        var snapshot = _procs.TryGetValue((ToHex(callInfo.Realm), callInfo.Procedure), out var entry) ? entry : ((CallHandler Handler, Policy Policy)?)null;
+        CallLookup lookup = (_, _) => snapshot?.Handler;
+        PolicyLookup policyLookup = (_, _) => snapshot?.Policy ?? Policy.Open;
 
-        var reply = await Session.BuildCallReplyAsync(link, callInfo, lookup, policyLookup, _identity).ConfigureAwait(false);
+        var reply = await Session.BuildCallReplyAsync(link, callInfo, lookup, policyLookup, _identity, ct).ConfigureAwait(false);
         try
         {
             await link.SendGatedAsync((s, c) => s.SendAsync(reply, c), ct).ConfigureAwait(false);
