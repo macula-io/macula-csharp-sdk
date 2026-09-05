@@ -24,7 +24,7 @@
 
   <ItemGroup>
     <PackageReference Include="Blake3" Version="3.0.2" />
-    <PackageReference Include="BouncyCastle.Cryptography" Version="2.5.1" />
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
     <PackageReference Include="Unofficial.MsQuic" Version="2.4.10" />
   </ItemGroup>
 
