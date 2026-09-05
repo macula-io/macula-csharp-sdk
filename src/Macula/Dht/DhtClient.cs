@@ -61,7 +61,17 @@ public static class DhtClient
         return Value.Map(entries);
     }
 
-    private static Record RecordFromRpcValue(Value v)
+    /// <summary>
+    /// Decodes one Record from the same full-field-name map shape
+    /// ToRpcValue produces -- internal (not private) so a caller in
+    /// this same assembly that already has a raw find_records_by_type
+    /// reply (Connection/StationDiscovery.cs, which must route its own
+    /// DHT queries through StationPool.CallAsync rather than a bare
+    /// Session -- see that file's own doc on why) can decode it without
+    /// duplicating this parsing. Mirrors macula-go's dht.RecordFromRPCValue,
+    /// exported for the identical reason.
+    /// </summary>
+    internal static Record RecordFromRpcValue(Value v)
     {
         if (v is not Value.MapValue m)
         {

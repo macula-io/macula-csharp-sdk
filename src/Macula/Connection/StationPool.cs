@@ -36,9 +36,99 @@ public sealed class PublishFailedException : Exception
     }
 }
 
+/// <summary>
+/// Picks how <see cref="StationPool.CallAsync"/>/<see cref="StationPool.PublishAsync"/>
+/// order the pool's currently-connected links before applying their own
+/// existing first-match/replication-factor logic -- it changes ORDER
+/// only, never how many links get used. Matches macula_client.erl's own
+/// link_selection option exactly (first_success/random), so config
+/// ported from the Erlang reference (or another SDK) doesn't need
+/// re-learning. SubscribeAsync/AdvertiseAsync are out of scope: they
+/// already fan out to every connected link, no ordering decision to
+/// make. PickConnectedSession is also out of scope -- it hands back a
+/// Session for driving dedicated-stream operations directly, not a
+/// pool-mediated Call/Publish.
+/// </summary>
+public enum LinkSelection
+{
+    /// <summary>
+    /// (The default.) Derives the actual policy from
+    /// <see cref="StationDiscoveryOptions.Enabled"/>: <see cref="FirstSuccess"/>
+    /// if discovery is off (today's original behavior, unchanged), <see cref="Random"/>
+    /// if it's on. Set LinkSelection explicitly to override that pairing
+    /// either way.
+    /// </summary>
+    Auto,
+
+    /// <summary>
+    /// Tries links in Seed-list order (bootstrap Seeds in the order the
+    /// caller gave them, then discovered links in discovery order --
+    /// see <see cref="PooledLink.Ordinal"/>'s own doc for why this
+    /// ordering has to be tracked explicitly rather than relying on
+    /// enumeration order) -- this SDK's original, pre-existing
+    /// behavior, left completely untouched on purpose for zero behavior
+    /// drift when a caller doesn't opt into StationDiscovery.
+    /// </summary>
+    FirstSuccess,
+
+    /// <summary>
+    /// Uniformly shuffles the connected-links list before the same
+    /// first-match (Call) or take-first-N (Publish) logic runs -- a
+    /// real, deliberate rotation, not an accident of iteration order.
+    /// Composes safely with a small ReplicationFactor: shuffling ahead
+    /// of a 1-element slice is a no-op.
+    /// </summary>
+    Random,
+}
+
+/// <summary>
+/// Configures opt-in discovery of additional stations via
+/// hecate_stations.list_stations, layered on top of the caller-supplied
+/// bootstrap Seeds. Default (Enabled == false) is a complete no-op --
+/// zero config means zero behavior change, matching macula_client.erl's
+/// own station_discovery option.
+///
+/// Bootstrap Seeds keep their exact current meaning: dialed first,
+/// permanent fallback if discovery never succeeds, never replaced.
+/// Discovery only ADDS links -- a station missing from a later refresh
+/// does NOT tear down an existing link; removal stays tied to the
+/// existing respawn/backoff cleanup only, never to absence from a
+/// discovery response (replication lag in the station directory isn't
+/// evidence a station is gone).
+/// </summary>
+public sealed class StationDiscoveryOptions
+{
+    public bool Enabled { get; init; } = false;
+
+    /// <summary>Interval between discovery attempts once at least one bootstrap link is up. Default 30 minutes.</summary>
+    public TimeSpan RefreshInterval { get; init; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// Bounds discovery's OWN adds only, not this pool's total link
+    /// count: discovery adds a link only while the pool's total link
+    /// count (Seeds + previously discovered, healthy or not) is below
+    /// MaxLinks. More bootstrap Seeds than MaxLinks are all still
+    /// dialed regardless (Connect never turns any of them away) -- that
+    /// just means discovery adds nothing, ever, for this pool. A link
+    /// discovery added that never connects (e.g. a station whose only
+    /// known address isn't dialable under this pool's Trust) still
+    /// occupies a slot against this cap even while permanently
+    /// unhealthy -- there is no separate "healthy slots" budget.
+    /// Default 5.
+    /// </summary>
+    public int MaxLinks { get; init; } = 5;
+}
+
 /// <summary>Tunables for <see cref="StationPool"/>. Defaults match macula_client.erl's own.</summary>
 public sealed class StationPoolOptions
 {
+    /// <summary>Link ordering policy for Call/Publish -- see <see cref="LinkSelection"/>'s own doc. Default Auto (derives from StationDiscovery.Enabled).</summary>
+    public LinkSelection LinkSelection { get; init; } = LinkSelection.Auto;
+
+    /// <summary>Opt-in station discovery via hecate_stations.list_stations -- see <see cref="StationDiscoveryOptions"/>'s own doc. Default off, a complete no-op.</summary>
+    public StationDiscoveryOptions StationDiscovery { get; init; } = new();
+
+
     /// <summary>How many currently-connected links a single publish fans out to. Partial success counts as success. Default 1.</summary>
     public int ReplicationFactor { get; init; } = 1;
 
@@ -132,12 +222,19 @@ public sealed class StationPoolOptions
 [SupportedOSPlatform("linux")]
 [SupportedOSPlatform("macos")]
 [SupportedOSPlatform("windows")]
-public sealed class StationPool : IAsyncDisposable
+public sealed partial class StationPool : IAsyncDisposable
 {
     private readonly KeyPair _identity;
     private readonly Trust _trust;
     private readonly StationPoolOptions _options;
-    private readonly Dictionary<Seed, PooledLink> _links;
+    // ConcurrentDictionary, not Dictionary: StationDiscovery.cs adds
+    // entries post-construction from its own background task while
+    // Status/Links/PickConnectedSession read _links.Values lock-free
+    // (by design, see their own docs) -- a plain Dictionary is not
+    // safe for concurrent add-while-enumerate, unlike every OTHER
+    // pool-wide collection here, which was already ConcurrentDictionary
+    // for exactly this reason.
+    private readonly ConcurrentDictionary<Seed, PooledLink> _links;
     private readonly SemaphoreSlim _stateLock = new(1, 1);
     private readonly ConcurrentDictionary<(string RealmHex, string Topic), ConcurrentDictionary<Guid, PoolEventHandler>> _subs = new();
     private readonly ConcurrentDictionary<Guid, (string RealmHex, string Topic)> _subIndex = new();
@@ -145,7 +242,26 @@ public sealed class StationPool : IAsyncDisposable
     private readonly ConcurrentDictionary<(string RealmHex, string Procedure), byte> _streamProcs = new();
     private readonly EventDedup _dedup;
     private readonly CancellationTokenSource _poolCts = new();
-    private readonly List<Task> _linkTasks = new();
+    // ConcurrentQueue, not List: StationDiscovery.cs adds tasks for newly
+    // discovered links post-construction, concurrently with
+    // DisposeAsync's own Task.WhenAll(_linkTasks) enumeration -- a plain
+    // List is not safe for concurrent add-while-enumerate either.
+    // ConcurrentQueue over ConcurrentBag specifically (found in
+    // adversarial review 2026-09-05): this collection is pure
+    // append-then-drain-all, never removed from piecemeal, which is
+    // exactly ConcurrentQueue's own shape -- ConcurrentBag's per-thread
+    // partitioning exists to make single-thread add-then-take-from-the-
+    // same-thread fast, a pattern this never uses.
+    private readonly ConcurrentQueue<Task> _linkTasks = new();
+    // Resolved once at construction (LinkSelectionAuto's pairing with
+    // StationDiscovery.Enabled doesn't change after Connect), matching
+    // every other Options field's "read once, use forever" treatment.
+    private readonly LinkSelection _resolvedLinkSelection;
+    // Backs PooledLink.Ordinal's assignment -- see that property's own
+    // doc. Starts past every bootstrap seed's own ordinal (assigned
+    // 0..N-1 in the constructor below), so the first discovered link
+    // always sorts after every bootstrap one.
+    private long _nextLinkOrdinal;
     private long _publishSeq;
     private Timer? _dedupSweepTimer;
     // Int, not bool, so DisposeAsync can flip it with Interlocked.Exchange --
@@ -179,12 +295,45 @@ public sealed class StationPool : IAsyncDisposable
         _trust = trust;
         _options = options;
         _dedup = new EventDedup(options.DedupWindow);
-        _links = seeds.Distinct().ToDictionary(s => s, s => new PooledLink(s));
+        var distinctSeeds = seeds.Distinct().ToList();
+        _links = new ConcurrentDictionary<Seed, PooledLink>(
+            distinctSeeds.Select((s, i) => new KeyValuePair<Seed, PooledLink>(s, new PooledLink(s, i))));
+        _nextLinkOrdinal = distinctSeeds.Count;
+        _resolvedLinkSelection = ResolveLinkSelection(options.LinkSelection, options.StationDiscovery.Enabled);
         // Wall-clock-seeded, matching macula_client.erl's init/1: a
         // restart under a persisted identity must not re-issue seqs a
         // station's own dedup window from the pre-restart tail would
         // still be holding.
         _publishSeq = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000;
+    }
+
+    /// <summary>
+    /// Spawn one link's RunLinkAsync/ConsumeEventsAsync task pair --
+    /// shared by Connect's own bootstrap-seed loop and
+    /// StationDiscovery.cs's SpawnSeedLinkIfAbsent, so both paths spawn
+    /// a link identically.
+    /// </summary>
+    private void SpawnLinkTasks(PooledLink link)
+    {
+        // Captured into a local BEFORE Task.Run, not read as _poolCts.Token
+        // inside the lambdas -- found in adversarial review 2026-09-05:
+        // when this is called from StationDiscovery's background task (not
+        // Connect's own bootstrap loop, which always finishes before
+        // DisposeAsync could possibly run), there is a real window where
+        // DisposeAsync's _poolCts.Dispose() (which runs AFTER its
+        // Task.WhenAll(_linkTasks) -- see that method's own doc) races the
+        // threadpool actually dequeuing these two lambdas. Reading
+        // _poolCts.Token lazily inside an orphaned lambda after Dispose()
+        // has run throws ObjectDisposedException in a task nobody
+        // observes; capturing the token eagerly here (while _poolCts is
+        // still guaranteed alive, since SpawnLinkTasks itself is only ever
+        // called from Connect or from the awaited discovery task) closes
+        // that window entirely.
+        var token = _poolCts.Token;
+        _linkTasks.Enqueue(Task.Run(() => RunLinkAsync(link, token)));
+        // One consumer for this link's whole lifetime, not per pump
+        // incarnation -- see PooledLink.Events's own doc.
+        _linkTasks.Enqueue(Task.Run(() => ConsumeEventsAsync(link.Events.Reader, token)));
     }
 
     /// <summary>
@@ -202,12 +351,20 @@ public sealed class StationPool : IAsyncDisposable
         var pool = new StationPool(identity ?? KeyPair.GenerateWithDefaultPuzzle(), trust, options ?? new StationPoolOptions(), seeds);
         foreach (var link in pool._links.Values)
         {
-            pool._linkTasks.Add(Task.Run(() => pool.RunLinkAsync(link, pool._poolCts.Token)));
-            // One consumer for this link's whole lifetime, not per pump
-            // incarnation -- see PooledLink.Events's own doc.
-            pool._linkTasks.Add(Task.Run(() => pool.ConsumeEventsAsync(link.Events.Reader, pool._poolCts.Token)));
+            pool.SpawnLinkTasks(link);
         }
         pool._dedupSweepTimer = new Timer(_ => pool._dedup.Sweep(), null, pool._options.DedupSweepInterval, pool._options.DedupSweepInterval);
+        if (pool._options.StationDiscovery.Enabled)
+        {
+            // Eager capture, matching SpawnLinkTasks -- this spawn is safe
+            // either way today (it's always registered in _linkTasks before
+            // Connect returns, so DisposeAsync's Task.WhenAll can't miss it),
+            // but capturing lazily here would silently reintroduce the same
+            // race class Fix 3 closed elsewhere if this spawn is ever moved
+            // off the synchronous Connect path (e.g. periodic re-discovery).
+            var discoveryToken = pool._poolCts.Token;
+            pool._linkTasks.Enqueue(Task.Run(() => pool.DiscoverStationsAsync(discoveryToken)));
+        }
         return pool;
     }
 
@@ -226,7 +383,11 @@ public sealed class StationPool : IAsyncDisposable
         await _stateLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            connected = ConnectedLinksSnapshot();
+            // SelectLinks changes ORDER only, never count: ReplicationFactor
+            // (applied below via Take(n)) stays the sole count control, so
+            // this composes safely with a small ReplicationFactor --
+            // shuffling ahead of a single-element Take is a no-op.
+            connected = SelectLinks(ConnectedLinksSnapshot());
             seq = _publishSeq++;
         }
         finally
@@ -484,7 +645,10 @@ public sealed class StationPool : IAsyncDisposable
         await _stateLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            connected = ConnectedLinksSnapshot();
+            // SelectLinks (FirstSuccess by default, Random when
+            // StationDiscovery is enabled) changes which link is tried
+            // FIRST, never the first-non-error-wins semantics below.
+            connected = SelectLinks(ConnectedLinksSnapshot());
         }
         finally
         {
@@ -617,7 +781,10 @@ public sealed class StationPool : IAsyncDisposable
     public Session? PickConnectedSession()
     {
         ThrowIfDisposed();
-        return _links.Values.FirstOrDefault(l => l.Connected)?.Session;
+        // OrderBy(Ordinal): see ConnectedLinksSnapshot's own doc on why
+        // _links.Values' own enumeration order can't be relied on since
+        // it became a ConcurrentDictionary.
+        return _links.Values.Where(l => l.Connected).OrderBy(l => l.Ordinal).FirstOrDefault()?.Session;
     }
 
     /// <summary>Aggregate health snapshot. Lock-free best-effort -- not for hot-loop polling.</summary>
@@ -631,13 +798,13 @@ public sealed class StationPool : IAsyncDisposable
         }
     }
 
-    /// <summary>Per-seed snapshot. Lock-free best-effort -- not for hot-loop polling.</summary>
+    /// <summary>Per-seed snapshot, in Seed-list/discovery order (see PooledLink.Ordinal's own doc). Lock-free best-effort -- not for hot-loop polling.</summary>
     public IReadOnlyList<LinkInfo> Links
     {
         get
         {
             ThrowIfDisposed();
-            return _links.Values.Select(l => new LinkInfo(l.Seed, l.Connected, l.Connected ? l.Session?.RemoteInfo.NodeId : null)).ToList();
+            return _links.Values.OrderBy(l => l.Ordinal).Select(l => new LinkInfo(l.Seed, l.Connected, l.Connected ? l.Session?.RemoteInfo.NodeId : null)).ToList();
         }
     }
 
@@ -701,6 +868,7 @@ public sealed class StationPool : IAsyncDisposable
                 try
                 {
                     link.Session = session;
+                    link.LastKnownNodeId = session.RemoteInfo.NodeId;
                     subsSnapshot = _subs.Keys.ToList();
                     procsSnapshot = _procs.Keys.ToList();
                     streamProcsSnapshot = _streamProcs.Keys.ToList();
@@ -907,7 +1075,60 @@ public sealed class StationPool : IAsyncDisposable
         }
     }
 
-    private List<PooledLink> ConnectedLinksSnapshot() => _links.Values.Where(l => l.Connected).ToList();
+    // OrderBy(Ordinal): _links is a ConcurrentDictionary (needed for
+    // StationDiscovery's post-construction adds -- see PooledLink.Ordinal's
+    // own doc), and ConcurrentDictionary.Values enumerates in hash-bucket
+    // order, NOT insertion order, unlike the plain Dictionary this used
+    // to be. Sorting by Ordinal restores the caller's own Seed-list
+    // order (bootstrap first, in the order given, discovered links
+    // after, in discovery order) that FirstSuccess's whole contract
+    // depends on.
+    private List<PooledLink> ConnectedLinksSnapshot() => _links.Values.Where(l => l.Connected).OrderBy(l => l.Ordinal).ToList();
+
+    /// <summary>
+    /// Orders a connected-links snapshot per <see cref="_resolvedLinkSelection"/> --
+    /// the single shared choke point CallAsync and PublishAsync both
+    /// route through, so the two operations can never drift onto
+    /// different selection policies by accident.
+    /// </summary>
+    private List<PooledLink> SelectLinks(List<PooledLink> connected) => SelectLinksCore(connected, _resolvedLinkSelection);
+
+    /// <summary>
+    /// The pure logic behind SelectLinks, extracted as a static,
+    /// internal function so it's directly unit-testable without a live
+    /// StationPool (whose only constructor path, Connect, immediately
+    /// dials real sessions -- this repo has no fake-dialer test seam,
+    /// see StationPoolLinkSelectionTests' own header doc). FirstSuccess
+    /// passes the list through unchanged (today's original insertion-
+    /// order behavior). Random shuffles a COPY (never the list the
+    /// caller passed in) via a Fisher-Yates shuffle using
+    /// <see cref="Random.Shared"/> (thread-safe since .NET 6, no
+    /// separate locking needed here).
+    /// </summary>
+    internal static List<PooledLink> SelectLinksCore(List<PooledLink> connected, LinkSelection resolved)
+    {
+        if (resolved != LinkSelection.Random || connected.Count <= 1)
+        {
+            return connected;
+        }
+        var shuffled = new List<PooledLink>(connected);
+        for (var i = shuffled.Count - 1; i > 0; i--)
+        {
+            var j = System.Random.Shared.Next(i + 1);
+            (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
+        }
+        return shuffled;
+    }
+
+    /// <summary>
+    /// The pure logic behind LinkSelectionAuto's pairing with
+    /// StationDiscovery.Enabled, extracted so it's unit-testable
+    /// without constructing a StationPool at all.
+    /// </summary>
+    internal static LinkSelection ResolveLinkSelection(LinkSelection configured, bool stationDiscoveryEnabled) =>
+        configured == LinkSelection.Auto
+            ? (stationDiscoveryEnabled ? LinkSelection.Random : LinkSelection.FirstSuccess)
+            : configured;
 
     //====================================================================
     // Pump -- the sole reader of a link's control stream
@@ -1097,8 +1318,42 @@ public sealed class StationPool : IAsyncDisposable
 internal sealed class PooledLink : IFrameSink
 {
     public Seed Seed { get; }
+
+    /// <summary>
+    /// Assignment order this link was created in -- bootstrap Seeds get
+    /// 0..N-1 in the caller's own list order, a discovered link gets
+    /// whatever the pool's shared counter is at when it's added (always
+    /// higher than every bootstrap ordinal). The ONLY thing that
+    /// determines FirstSuccess/take-first-N ordering everywhere it
+    /// matters (ConnectedLinksSnapshot, PickConnectedSession, Links) --
+    /// found in adversarial review 2026-09-05: _links itself became a
+    /// ConcurrentDictionary (needed so StationDiscovery can add entries
+    /// post-construction safely), and ConcurrentDictionary.Values
+    /// enumerates in hash-bucket order, NOT insertion order -- unlike
+    /// the plain Dictionary this class used before, which happened to
+    /// preserve it. Without this field, a caller's own "primary, then
+    /// fallback" Seed list would silently stop being honored the
+    /// instant this diff shipped, and Links' own reported order would
+    /// vary randomly across process restarts (per-process randomized
+    /// string hashing) -- confirmed empirically, not assumed.
+    /// </summary>
+    public long Ordinal { get; }
+
     public Session? Session { get; set; }
     public bool Connected { get; set; }
+
+    /// <summary>
+    /// The peer's node id as of the last successful handshake -- unlike
+    /// Connected/Session, deliberately NOT cleared when the link
+    /// disconnects: a link mid-backoff/redial is still, as far as
+    /// station-DISCOVERY's own dedupe-by-identity is concerned (see
+    /// StationDiscovery.cs's HasLinkForNodeId), "the same station we
+    /// already have a link to." Updated on every successful dial, not
+    /// just the first -- a redial can legitimately prove a different
+    /// node id (e.g. a DNS name repointed to a different station).
+    /// </summary>
+    public byte[]? LastKnownNodeId { get; set; }
+
     public ConcurrentDictionary<string, TaskCompletionSource<CallResponse>> PendingCalls { get; } = new();
 
     /// <summary>
@@ -1122,9 +1377,10 @@ internal sealed class PooledLink : IFrameSink
 
     private readonly SemaphoreSlim _sendGate = new(1, 1);
 
-    public PooledLink(Seed seed)
+    public PooledLink(Seed seed, long ordinal)
     {
         Seed = seed;
+        Ordinal = ordinal;
     }
 
     /// <summary>
