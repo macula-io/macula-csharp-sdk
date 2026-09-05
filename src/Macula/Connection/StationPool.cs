@@ -148,9 +148,30 @@ public sealed class StationPool : IAsyncDisposable
     private readonly List<Task> _linkTasks = new();
     private long _publishSeq;
     private Timer? _dedupSweepTimer;
-    private bool _disposed;
+    // Int, not bool, so DisposeAsync can flip it with Interlocked.Exchange --
+    // a plain bool double-checked-if would let two concurrent DisposeAsync
+    // calls both pass the check and both call _poolCts.Cancel() on an
+    // already-cancelled-then-disposed source. 0 = live, 1 = disposed.
+    private int _disposed;
 
     public KeyPair Identity => _identity;
+
+    /// <summary>
+    /// Every public method that touches pool state calls this first. Found
+    /// in adversarial review 2026-09-05: without it, a call after (or
+    /// racing) DisposeAsync fell through to _stateLock.WaitAsync and threw
+    /// a bare SemaphoreSlim ObjectDisposedException with no pool-level
+    /// context -- or, once _stateLock stopped being disposed (see
+    /// DisposeAsync's own doc), would have silently succeeded against a
+    /// pool with every link already torn down instead of failing clearly.
+    /// </summary>
+    private void ThrowIfDisposed()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(StationPool));
+        }
+    }
 
     private StationPool(KeyPair identity, Trust trust, StationPoolOptions options, IReadOnlyList<Seed> seeds)
     {
@@ -182,6 +203,9 @@ public sealed class StationPool : IAsyncDisposable
         foreach (var link in pool._links.Values)
         {
             pool._linkTasks.Add(Task.Run(() => pool.RunLinkAsync(link, pool._poolCts.Token)));
+            // One consumer for this link's whole lifetime, not per pump
+            // incarnation -- see PooledLink.Events's own doc.
+            pool._linkTasks.Add(Task.Run(() => pool.ConsumeEventsAsync(link.Events.Reader, pool._poolCts.Token)));
         }
         pool._dedupSweepTimer = new Timer(_ => pool._dedup.Sweep(), null, pool._options.DedupSweepInterval, pool._options.DedupSweepInterval);
         return pool;
@@ -196,6 +220,7 @@ public sealed class StationPool : IAsyncDisposable
     /// </summary>
     public async Task PublishAsync(byte[] realm, string topic, Value payload, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         List<PooledLink> connected;
         long seq;
         await _stateLock.WaitAsync(ct).ConfigureAwait(false);
@@ -266,6 +291,7 @@ public sealed class StationPool : IAsyncDisposable
     /// </summary>
     public async Task<Guid> SubscribeAsync(byte[] realm, string topic, PoolEventHandler handler, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         var subId = Guid.NewGuid();
         var key = (ToHex(realm), topic);
         bool isNewTopic;
@@ -305,6 +331,7 @@ public sealed class StationPool : IAsyncDisposable
     /// </summary>
     public async Task UnsubscribeAsync(Guid subscriptionId, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         await _stateLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -336,6 +363,7 @@ public sealed class StationPool : IAsyncDisposable
     /// </summary>
     public async Task AdvertiseAsync(byte[] realm, string procedure, CallHandler handler, Policy? policy = null, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         var key = (ToHex(realm), procedure);
         List<PooledLink> connected;
 
@@ -360,6 +388,7 @@ public sealed class StationPool : IAsyncDisposable
     /// <summary>Drop a previously-advertised procedure on every live link and remove it from replay state. Idempotent.</summary>
     public async Task UnadvertiseAsync(byte[] realm, string procedure, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         var key = (ToHex(realm), procedure);
         List<PooledLink> connected;
 
@@ -390,6 +419,7 @@ public sealed class StationPool : IAsyncDisposable
     /// </summary>
     public async Task AdvertiseStreamAsync(byte[] realm, string procedure, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         var key = (ToHex(realm), procedure);
         List<PooledLink> connected;
 
@@ -413,6 +443,7 @@ public sealed class StationPool : IAsyncDisposable
 
     public async Task UnadvertiseStreamAsync(byte[] realm, string procedure, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         var key = (ToHex(realm), procedure);
         List<PooledLink> connected;
 
@@ -441,10 +472,14 @@ public sealed class StationPool : IAsyncDisposable
     /// one, in which case that outcome is what's returned/thrown -- mirrors
     /// macula_client:call_first_success/5 exactly, including its choice to
     /// surface the LAST attempt's own outcome rather than a generic
-    /// failure when every link was actually tried.
+    /// failure when every link was actually tried. <paramref name="timeout"/>
+    /// is applied PER LINK, not to the call as a whole -- matching the
+    /// reference, the worst case is N * timeout across N connected links,
+    /// not timeout total.
     /// </summary>
     public async Task<CallResponse> CallAsync(byte[] realm, string procedure, Value payload, TimeSpan timeout, byte[]? ucanToken = null, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         List<PooledLink> connected;
         await _stateLock.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -549,7 +584,22 @@ public sealed class StationPool : IAsyncDisposable
         finally
         {
             link.PendingCalls.TryRemove(key, out _);
-            await RpcFacts.AnnounceCompletedAsync(link, realm, _identity, requestId, resp, err, boundedCt).ConfigureAwait(false);
+            // A FRESH, independent budget for the announce write, not
+            // boundedCt -- found in adversarial review 2026-09-05: on the
+            // exact paths this fact exists to report (a per-link timeout or
+            // caller cancellation), boundedCt is ALREADY cancelled by the
+            // time this finally block runs, so awaiting the gated write
+            // with that same token failed instantly and was swallowed by
+            // AnnounceAsync's own catch-all -- rpc.completed_v1
+            // outcome=failed was silently never emitted for a timed-out or
+            // cancelled call, exactly the outcome most worth recording.
+            // Linked to the ORIGINAL ct (not boundedCt), so a genuine
+            // caller cancellation still aborts this promptly instead of
+            // waiting out a full WireWriteTimeout on a connection that's
+            // being torn down anyway.
+            using var announceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            announceCts.CancelAfter(_options.WireWriteTimeout);
+            await RpcFacts.AnnounceCompletedAsync(link, realm, _identity, requestId, resp, err, announceCts.Token).ConfigureAwait(false);
         }
     }
 
@@ -564,35 +614,54 @@ public sealed class StationPool : IAsyncDisposable
     /// already owns and would race it. Returns null if no link is
     /// currently connected.
     /// </summary>
-    public Session? PickConnectedSession() => _links.Values.FirstOrDefault(l => l.Connected)?.Session;
+    public Session? PickConnectedSession()
+    {
+        ThrowIfDisposed();
+        return _links.Values.FirstOrDefault(l => l.Connected)?.Session;
+    }
 
     /// <summary>Aggregate health snapshot. Lock-free best-effort -- not for hot-loop polling.</summary>
     public PoolStatus Status
     {
         get
         {
+            ThrowIfDisposed();
             var healthy = _links.Values.Count(l => l.Connected);
             return new PoolStatus(healthy, _links.Count - healthy, _subIndex.Count);
         }
     }
 
     /// <summary>Per-seed snapshot. Lock-free best-effort -- not for hot-loop polling.</summary>
-    public IReadOnlyList<LinkInfo> Links =>
-        _links.Values.Select(l => new LinkInfo(l.Seed, l.Connected, l.Connected ? l.Session?.RemoteInfo.NodeId : null)).ToList();
+    public IReadOnlyList<LinkInfo> Links
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _links.Values.Select(l => new LinkInfo(l.Seed, l.Connected, l.Connected ? l.Session?.RemoteInfo.NodeId : null)).ToList();
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
-        _disposed = true;
 
         _dedupSweepTimer?.Dispose();
         _poolCts.Cancel();
         await Task.WhenAll(_linkTasks).ConfigureAwait(false);
-        _stateLock.Dispose();
         _poolCts.Dispose();
+        // _stateLock is deliberately NEVER disposed. Found in adversarial
+        // review 2026-09-05: SemaphoreSlim.Dispose() does not complete or
+        // release outstanding async waiters -- a WaitAsync() call already
+        // blocked on this lock at the instant of dispose would hang
+        // forever instead of throwing, and every caller of a public method
+        // above still holds a reference to this same instance for its own
+        // process lifetime. ThrowIfDisposed() above is what actually
+        // prevents post-dispose use; the semaphore itself is left alive
+        // (a bounded, tiny handle, not a real leak) rather than risk that
+        // hang for the sake of disposing it.
     }
 
     //====================================================================
@@ -610,6 +679,7 @@ public sealed class StationPool : IAsyncDisposable
             }
             catch (OperationCanceledException) when (poolCt.IsCancellationRequested)
             {
+                link.Events.Writer.TryComplete();
                 return;
             }
             catch (Exception)
@@ -622,13 +692,38 @@ public sealed class StationPool : IAsyncDisposable
                 continue;
             }
 
+            List<(string RealmHex, string Topic)> subsSnapshot;
+            List<(string RealmHex, string Procedure)> procsSnapshot;
+            List<(string RealmHex, string Procedure)> streamProcsSnapshot;
             try
             {
                 await _stateLock.WaitAsync(poolCt).ConfigureAwait(false);
                 try
                 {
                     link.Session = session;
-                    await ReplayOntoAsync(link, poolCt).ConfigureAwait(false);
+                    subsSnapshot = _subs.Keys.ToList();
+                    procsSnapshot = _procs.Keys.ToList();
+                    streamProcsSnapshot = _streamProcs.Keys.ToList();
+                    // Flipped HERE, before the actual wire replay below runs
+                    // (and while still under _stateLock) -- found in
+                    // adversarial review 2026-09-05 that awaiting every
+                    // replay write while HOLDING the pool-wide lock (the
+                    // original shape) meant a single degraded seed with many
+                    // tracked subscriptions could block every OTHER link's
+                    // Publish/Call/Subscribe/Advertise for
+                    // N * WireWriteTimeout -- exactly when a respawn is
+                    // most likely (a station is degraded). Flipping
+                    // Connected here, then releasing the lock BEFORE
+                    // running the writes, preserves "never both, never
+                    // neither" from this method's own original doc: a
+                    // Subscribe/Advertise/Unadvertise for a NEW (realm,
+                    // topic/procedure) that lands after this point sees
+                    // this link as connected (ConnectedLinksSnapshot filters
+                    // on Connected) and wire-issues to it directly, while
+                    // this link's own replay below only re-sends what was
+                    // in the snapshot taken at this exact instant -- never
+                    // both (the new entry isn't in the snapshot) and never
+                    // neither (the immediate wire-issue path covers it).
                     link.Connected = true;
                 }
                 finally
@@ -642,12 +737,14 @@ public sealed class StationPool : IAsyncDisposable
                 // session on the pool-shutdown path (the state lock wait
                 // itself was what got cancelled), so there is nothing to
                 // unmark -- just close it and stop.
+                link.Events.Writer.TryComplete();
                 await CloseSessionAsync(session).ConfigureAwait(false);
                 return;
             }
 
             try
             {
+                await ReplayAsync(link, subsSnapshot, procsSnapshot, streamProcsSnapshot, poolCt).ConfigureAwait(false);
                 await PumpAsync(link, session, poolCt).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (poolCt.IsCancellationRequested)
@@ -655,19 +752,24 @@ public sealed class StationPool : IAsyncDisposable
                 // Pool shutdown, not a fault -- still unmark the link (a
                 // caller mid-CallAsync against it, or Status/Links read
                 // after DisposeAsync returns, must not see a stale
-                // Connected=true) before closing.
+                // Connected=true) before closing. This link's Events
+                // writer is now permanently done -- no future incarnation
+                // will ever write to it again.
+                link.Events.Writer.TryComplete();
                 await MarkDisconnectedAsync(link).ConfigureAwait(false);
                 await CloseSessionAsync(session).ConfigureAwait(false);
                 return;
             }
             catch (Exception)
             {
-                // Transport-level fault on the control stream -- fall
-                // through to respawn. A tolerable per-frame issue (an
-                // unrecognized frame type, e.g. the station's own
-                // unprompted content-procedure advertise broadcasts)
-                // never reaches here -- PumpAsync only lets a raw
-                // RecvAsync failure propagate, never a parse mismatch.
+                // Transport-level fault on the control stream (or a replay
+                // write's own genuine failure -- rare, since
+                // TrySendReplayAsync swallows everything but real poolCt
+                // cancellation) -- fall through to respawn. A tolerable
+                // per-frame issue (an unrecognized frame type, e.g. the
+                // station's own unprompted content-procedure advertise
+                // broadcasts) never reaches here -- PumpAsync only lets a
+                // raw RecvAsync failure propagate, never a parse mismatch.
             }
 
             await MarkDisconnectedAsync(link).ConfigureAwait(false);
@@ -693,35 +795,38 @@ public sealed class StationPool : IAsyncDisposable
     }
 
     /// <summary>
-    /// Runs with `_stateLock` held (called only from RunLinkAsync's connect
-    /// branch). Replays every tracked subscription and advertisement onto
-    /// `link`'s freshly-connected Session -- first connect and every later
-    /// respawn go through this exact same path, so there is no separate
-    /// "pre-handshake pending" concept to keep in sync: a Subscribe/
-    /// Advertise call that lands while this link is still dialing simply
-    /// registers in `_subs`/`_procs` under the same lock this method
-    /// itself needs, so it is either already in the snapshot this method
-    /// replays, or (if it lands after) picked up by SubscribeAsync's own
-    /// immediate wire-issue to already-connected links -- never both,
-    /// never neither, because both paths serialize through `_stateLock`.
+    /// Replays a pre-taken snapshot of tracked subscriptions/advertisements
+    /// onto `link`'s freshly-connected Session -- first connect and every
+    /// later respawn go through this exact same path, so there is no
+    /// separate "pre-handshake pending" concept to keep in sync. Runs
+    /// OUTSIDE `_stateLock` (unlike the version this replaced): the
+    /// snapshot is taken under the lock, at the same instant `link.Connected`
+    /// is flipped to true, in RunLinkAsync itself -- see that method's own
+    /// doc for why the actual wire writes must not run while holding the
+    /// pool-wide lock, and for why replaying exactly this snapshot (rather
+    /// than re-reading `_subs`/`_procs`/`_streamProcs` here) is what keeps
+    /// "never both, never neither" true even though the writes now happen
+    /// after the lock is released.
     /// </summary>
-    private async Task ReplayOntoAsync(PooledLink link, CancellationToken ct)
+    private async Task ReplayAsync(
+        PooledLink link,
+        List<(string RealmHex, string Topic)> subsSnapshot,
+        List<(string RealmHex, string Procedure)> procsSnapshot,
+        List<(string RealmHex, string Procedure)> streamProcsSnapshot,
+        CancellationToken ct)
     {
-        foreach (var key in _subs.Keys.ToList())
+        foreach (var (realmHex, topic) in subsSnapshot)
         {
-            var (realmHex, topic) = key;
             var spec = new SubscribeSpec { Topic = topic, Realm = FromHex(realmHex), Subscriber = _identity.NodeId() };
             await TrySendReplayAsync(link, ct, (s, c) => s.SubscribeAsync(spec, c)).ConfigureAwait(false);
         }
-        foreach (var key in _procs.Keys.ToList())
+        foreach (var (realmHex, procedure) in procsSnapshot)
         {
-            var (realmHex, procedure) = key;
             var spec = new AdvertiseSpec { Realm = FromHex(realmHex), Procedure = procedure, Advertiser = _identity.NodeId() };
             await TrySendReplayAsync(link, ct, (s, c) => s.AdvertiseAsync(spec, c)).ConfigureAwait(false);
         }
-        foreach (var key in _streamProcs.Keys.ToList())
+        foreach (var (realmHex, procedure) in streamProcsSnapshot)
         {
-            var (realmHex, procedure) = key;
             var spec = new AdvertiseSpec { Realm = FromHex(realmHex), Procedure = procedure, Advertiser = _identity.NodeId() };
             await TrySendReplayAsync(link, ct, (s, c) => s.AdvertiseAsync(spec, c)).ConfigureAwait(false);
         }
@@ -809,20 +914,24 @@ public sealed class StationPool : IAsyncDisposable
     //====================================================================
 
     /// <summary>
-    /// EVENT frames go through a per-link, single-consumer Channel rather
-    /// than a bare `Task.Run` per frame: dispatching each EVENT to its own
-    /// fire-and-forget Task let the threadpool reorder them relative to
-    /// arrival, and let the SAME subscriber's handler be re-entered
-    /// concurrently for two events that arrived a moment apart on this
-    /// link -- neither matches the reference (one link's frames arrive in
-    /// strict order off one QUIC stream; a gen_server-owned mailbox
-    /// delivers to a subscriber pid one message at a time). A single
-    /// dedicated consumer task drains the channel strictly in receipt
-    /// order, awaiting each event's full dedup+fan-out before starting the
-    /// next -- ordering and non-reentrancy are per link, matching the
-    /// bound this class's own doc already states (no CROSS-link ordering
-    /// is attempted; that would need the reorder buffer this pass
-    /// deliberately doesn't port).
+    /// EVENT frames go through <see cref="PooledLink.Events"/>, a per-link,
+    /// single-consumer Channel that lives for the link's whole lifetime
+    /// (see that property's own doc for why it is NOT recreated per pump
+    /// incarnation) rather than a bare `Task.Run` per frame: dispatching
+    /// each EVENT to its own fire-and-forget Task let the threadpool
+    /// reorder them relative to arrival, and let the SAME subscriber's
+    /// handler be re-entered concurrently for two events that arrived a
+    /// moment apart on this link -- neither matches the reference (one
+    /// link's frames arrive in strict order off one QUIC stream; a
+    /// gen_server-owned mailbox delivers to a subscriber pid one message
+    /// at a time). The dedicated consumer task (spawned once in
+    /// StationPool.Connect) drains the channel strictly in receipt order,
+    /// awaiting each event's full dedup+fan-out before starting the next --
+    /// ordering and non-reentrancy are per link, matching the bound this
+    /// class's own doc already states (no CROSS-link ordering is
+    /// attempted; that would need the reorder buffer this pass
+    /// deliberately doesn't port), and now hold ACROSS a respawn too, not
+    /// just within one incarnation.
     ///
     /// The channel write itself is a fast, non-blocking TryWrite (unbounded
     /// channel), so the pump loop's own promptness at reading CALL/RESULT/
@@ -830,43 +939,28 @@ public sealed class StationPool : IAsyncDisposable
     /// </summary>
     private async Task PumpAsync(PooledLink link, Session session, CancellationToken poolCt)
     {
-        var events = Channel.CreateUnbounded<Value>(new UnboundedChannelOptions { SingleWriter = true, SingleReader = true });
-        var eventConsumer = Task.Run(() => ConsumeEventsAsync(events.Reader, poolCt), CancellationToken.None);
-        try
+        while (true)
         {
-            while (true)
+            var frame = await session.RecvAsync(poolCt).ConfigureAwait(false);
+            switch (FrameType(frame))
             {
-                var frame = await session.RecvAsync(poolCt).ConfigureAwait(false);
-                switch (FrameType(frame))
-                {
-                    case "event":
-                        events.Writer.TryWrite(frame);
-                        break;
-                    case "call":
-                        _ = Task.Run(() => HandleInboundCallAsync(link, frame, poolCt), CancellationToken.None);
-                        break;
-                    case "result":
-                    case "error":
-                        CompletePendingCall(link, frame);
-                        break;
-                    default:
-                        // Tolerated, not fatal -- e.g. the live station's own
-                        // unprompted advertise broadcasts for its built-in
-                        // _content.* procedures, periodically sent on every
-                        // connected client's control stream.
-                        break;
-                }
+                case "event":
+                    link.Events.Writer.TryWrite(frame);
+                    break;
+                case "call":
+                    _ = Task.Run(() => HandleInboundCallAsync(link, frame, poolCt), CancellationToken.None);
+                    break;
+                case "result":
+                case "error":
+                    CompletePendingCall(link, frame);
+                    break;
+                default:
+                    // Tolerated, not fatal -- e.g. the live station's own
+                    // unprompted advertise broadcasts for its built-in
+                    // _content.* procedures, periodically sent on every
+                    // connected client's control stream.
+                    break;
             }
-        }
-        finally
-        {
-            // No more EVENTs will arrive for this (dying or pool-closing)
-            // link. The consumer drains whatever is already buffered, in
-            // order, then exits on its own -- not awaited here, so a slow
-            // straggler event doesn't delay RunLinkAsync's own respawn
-            // cycle.
-            events.Writer.TryComplete();
-            _ = eventConsumer;
         }
     }
 
@@ -1006,6 +1100,25 @@ internal sealed class PooledLink : IFrameSink
     public Session? Session { get; set; }
     public bool Connected { get; set; }
     public ConcurrentDictionary<string, TaskCompletionSource<CallResponse>> PendingCalls { get; } = new();
+
+    /// <summary>
+    /// This link's own EVENT queue, created ONCE for the link's whole
+    /// lifetime and only ever completed when the link is torn down for
+    /// good (pool disposal) -- NOT recreated on every respawn. Found in
+    /// adversarial review 2026-09-05: a fresh Channel per pump incarnation
+    /// reintroduced, at every respawn boundary, exactly the reordering/
+    /// re-entrancy bug the per-link Channel was built to fix in the first
+    /// place (209785a) -- a slow-draining OLD incarnation's consumer task
+    /// was never awaited before the NEW incarnation's consumer started, so
+    /// a subscriber's handler could be invoked concurrently from both, and
+    /// an old-link straggler event could be delivered after a new-link
+    /// event that arrived later in wall-clock time. One long-lived Channel
+    /// plus one long-lived consumer task (spawned once in
+    /// StationPool.Connect) removes the boundary entirely: every
+    /// PumpAsync incarnation only ever writes to it, never owns its
+    /// lifecycle.
+    /// </summary>
+    public Channel<Value> Events { get; } = Channel.CreateUnbounded<Value>(new UnboundedChannelOptions { SingleWriter = true, SingleReader = true });
 
     private readonly SemaphoreSlim _sendGate = new(1, 1);
 
